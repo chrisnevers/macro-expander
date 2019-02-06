@@ -76,7 +76,23 @@ and parse_lambda input =
   let body = parse_exp input in
   SLambda (id, body)
 
-and parse_datum input = SDatum (parse_exp input)
+and parse_datums input =
+  let next = next_token input in
+  match next with
+  | StRParen -> []
+  | _ -> let d = parse_datum input in
+    d :: parse_datums input
+
+and parse_datum input =
+  let token = get_token input in
+  match token with
+  | StId id -> SSymbol id
+  | StLParen ->
+    let ds = parse_datums input in
+    let _ = expect_token input StRParen in
+    SList ds
+  | StQuote -> SList [SSymbol "quote"; parse_datum input]
+  | _ -> parser_error ("parse_datum: " ^ str_s_token token)
 
 let rec parse input =
   let next = next_token input in

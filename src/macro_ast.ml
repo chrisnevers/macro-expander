@@ -1,5 +1,8 @@
 open List
 
+exception MacroError of string
+let macro_error msg = raise (MacroError msg)
+
 (*
   expr :=
     | (lambda (<id>) <expr>)      function
@@ -19,16 +22,23 @@ type s_exp =
   | SQuoteSyntax of s_datum
 
 and s_datum =
-  | SDatum of s_exp
+  | SSymbol of string
+  | SList of s_datum list
 
 let rec str_s_exp e = match e with
-  | SLambda (id, e) -> "(LAMBDA (" ^ id ^ ") " ^ str_s_exp e ^ ")"
   | SId id -> id
-  | SApply (id, args) -> "(" ^ str_s_exp id ^ " " ^ String.concat " " (map str_s_exp args) ^ ")"
   | SQuote d -> "'" ^ str_s_datum d
-  | SLetSyntax (id, p, b) -> "(LET-SYNTAX ([" ^ id ^ " " ^ str_s_exp p ^ "]) "
-                              ^ str_s_exp b ^ ")"
   | SQuoteSyntax d -> "(QUOTE-SYNTAX " ^ str_s_datum d ^ ")"
+  | SLambda (id, e) -> "(LAMBDA (" ^ id ^ ") " ^ str_s_exp e ^ ")"
+  | SApply (id, args) ->
+    "(" ^ str_s_exp id ^ " " ^ String.concat " " (map str_s_exp args) ^ ")"
+  | SLetSyntax (id, p, b) ->
+    "(LET-SYNTAX ([" ^ id ^ " " ^ str_s_exp p ^ "]) " ^ str_s_exp b ^ ")"
 
 and str_s_datum a = match a with
-  | SDatum s -> str_s_exp s
+  | SSymbol s -> s
+  | SList s -> "(" ^ String.concat " " (map str_s_datum s) ^ ")"
+
+let get_datum s = match s with
+  | SQuote d | SQuoteSyntax d -> d
+  | _ -> macro_error "get_datum: expected expr with datum"
