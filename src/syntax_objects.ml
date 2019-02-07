@@ -17,6 +17,8 @@ let rec str_syntax s = match s with
     ScopeSet.fold (fun i acc -> acc ^ string_of_int i ^ " ") s "" ^ "})"
   | SyntaxList ss -> "[" ^ String.concat ", " (map str_syntax ss) ^ "]"
 
+let syntax e scopes = SyntaxObj (e, ScopeSet.of_list scopes)
+
 let rec syntax_e e = match e with
   | SyntaxObj (e, s) -> e
   | SyntaxList s -> macro_error "syntax_e: expected syntax object"
@@ -42,7 +44,7 @@ let rec adjust_scope so sc op =
   | SyntaxObj (e, s) -> SyntaxObj (e, op sc s)
   | SyntaxList ss -> SyntaxList (map (fun s -> adjust_scope s sc op) ss)
 
-let add_scope = ScopeSet.add
+let add_scope sc scs = ScopeSet.add sc scs
 
 let flip_scope sc scs =
   let open ScopeSet in

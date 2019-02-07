@@ -13,7 +13,8 @@ let print_ast ast =
 
 (* Driver *)
 let () =
-  let program = Sys.argv.(1) in
+  (* let program = Sys.argv.(1) in *)
+  let program = "examples/ex.rkt" in
   let stream  = get_stream program `File in
   let tokens  = lex stream in
   let ast     = parse (ref tokens) in
@@ -25,3 +26,7 @@ let () =
   test_add_scope ();
   test_flip_scope ();
   test_resolve ();
+  test_resolve_false ();
+  test_core ();
+  test_core_fail ();
+  test_introduce ();

@@ -1,7 +1,7 @@
 all: main
 
 main:
-	ocamlbuild -I src src/main.native
+	ocamlbuild -I src src/main.native --
 
 ex:
 	./main.native examples/ex.rkt
