@@ -76,4 +76,4 @@ let add_core =
   let sym = map quote (core_primitive_list @ core_form_list) in
   iter (fun s -> add_binding (syntax s [core_scope]) core_scope) sym
 
-let introduce s = adjust_scope s core_scope add_scope
+let introduce s = add_scope s core_scope

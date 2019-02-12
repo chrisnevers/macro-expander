@@ -3,14 +3,6 @@ open List
 open Macro_ast
 open Scope
 
-module ScopeSet = Set.Make(struct type t = scope let compare = compare end)
-
-type scope_set = ScopeSet.t
-
-type syntax =
-  | SyntaxObj of s_exp * scope_set
-  | SyntaxList of syntax list
-
 let rec str_syntax s = match s with
   | SyntaxObj (e, s) ->
     "SyntaxObj(" ^ str_s_exp e ^ ", {" ^
@@ -60,8 +52,10 @@ let rec adjust_scope so sc op =
   | SyntaxObj (e, s) -> SyntaxObj (e, op sc s)
   | SyntaxList ss -> SyntaxList (map (fun s -> adjust_scope s sc op) ss)
 
-let add_scope sc scs = ScopeSet.add sc scs
+let add_scope so sc = adjust_scope so sc ScopeSet.add
 
-let flip_scope sc scs =
+let flip_scope_op sc scs =
   let open ScopeSet in
   if mem sc scs then remove sc scs else add sc scs
+
+let flip_scope so sc = adjust_scope so sc flip_scope_op

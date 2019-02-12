@@ -24,15 +24,15 @@ let test_syntax_to_datum () =
 
 let test_add_scope () =
   let sc = scope () in
-  let ad = adjust_scope so sc add_scope in
+  let ad = add_scope so sc in
   print_endline ("\nTEST: Add_Scope");
   print_endline ("<-: " ^ str_syntax so);
   print_endline ("->: " ^ str_syntax ad)
 
 let test_flip_scope () =
   let sc = scope () in
-  let ad = adjust_scope so sc add_scope in
-  let fl = adjust_scope ad sc flip_scope in
+  let ad = add_scope so sc in
+  let fl = flip_scope ad sc in
   print_endline ("\nTEST: Flip_Scope");
   print_endline ("<-: " ^ str_syntax ad);
   print_endline ("->: " ^ str_syntax fl)
@@ -84,7 +84,7 @@ let test_resolve_false () =
   print_endline ("\nTEST: Resolve (False)");
   let sc1 = scope () in
   let so = SyntaxObj(SId "y", ScopeSet.empty) in
-  let so1 = adjust_scope so sc1 add_scope in
+  let so1 = add_scope so sc1 in
   (* Add pink binding *)
   let binding = Gensym.gen_int () in
   add_binding so1 binding;
@@ -92,20 +92,20 @@ let test_resolve_false () =
                   ^ " binding of " ^ string_of_int binding);
   (* Add pink and orange binding *)
   let sc2 = scope () in
-  let so2 = adjust_scope so1 sc2 add_scope in
+  let so2 = add_scope so1 sc2 in
   let binding2 = Gensym.gen_int () in
   add_binding so2 binding2;
   print_endline ("Assigned " ^ str_syntax so2
                   ^ " binding of " ^ string_of_int binding2);
   (* Lookup just orange binding *)
-  let so3 = adjust_scope so sc2 add_scope in
+  let so3 = add_scope so sc2 in
   let loc = resolve so3 in
   print_endline ("<-: " ^ str_syntax so3);
   print_endline ("->: " ^ string_of_int loc)
 
 let test_core () =
   print_endline ("\nTEST: Core");
-  let so = adjust_scope (mk_syntax (SId "cons")) core_scope add_scope in
+  let so = add_scope (mk_syntax (SId "cons")) core_scope in
   let loc = resolve so in
   print_endline ("<-: " ^ str_syntax so);
   print_endline ("->: " ^ string_of_int loc)
@@ -157,7 +157,7 @@ let test_expand_app () =
   env_extend empty_env binding MacroFunction;
   expand_id_app (introduce so) empty_env;
 
-
+(*
   print_string "Expand app: ";
   expand (mk_syntax (SApply (SId "one", [])));
 
@@ -165,4 +165,4 @@ let test_expand_app () =
   expand (mk_syntax (SLambda ("x", SId "x")));
 
   print_string "Expand list: ";
-  expand (mk_syntax (SApply (SApply (SId "curried", [SQuote (SSymbol "1")]), [SQuote (SSymbol "2")])))
+  expand (mk_syntax (SApply (SApply (SId "curried", [SQuote (SSymbol "1")]), [SQuote (SSymbol "2")]))) *)
