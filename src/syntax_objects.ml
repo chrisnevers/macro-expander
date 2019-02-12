@@ -19,9 +19,25 @@ let rec str_syntax s = match s with
 
 let syntax e scopes = SyntaxObj (e, ScopeSet.of_list scopes)
 
+let mk_syntax e = SyntaxObj (e, ScopeSet.empty)
+
 let rec syntax_e e = match e with
   | SyntaxObj (e, s) -> e
-  | SyntaxList s -> macro_error "syntax_e: expected syntax object"
+  | SyntaxList s ->
+    match s with
+    | SyntaxObj (SId "lambda", sc1)
+      :: SyntaxList [SyntaxObj (SId arg, sc2)]
+      :: SyntaxObj (body, sc3):: [] -> SLambda (arg, body)
+    | SyntaxObj (SId "let-syntax", sc1)
+      :: SyntaxObj (SId id, sc2)
+      :: SyntaxObj (ie, sc3) :: SyntaxObj (be, sc4) :: [] ->
+        SLetSyntax (id, ie, be)
+    | SyntaxObj (SId "quote", sc1)
+      :: SyntaxObj (SQuote s, sc2) :: [] -> SQuote s
+    | SyntaxObj (SId "quote-syntax", sc1)
+      :: SyntaxObj (SQuote s, sc2) :: []-> SQuoteSyntax s
+    | SyntaxObj (id, sc) :: SyntaxList t :: [] ->
+      SApply (id, map syntax_e t)
 
 let rec syntax_s e = match e with
   | SyntaxObj (e, s) -> s

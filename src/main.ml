@@ -5,6 +5,7 @@ open Macro_ast
 open Macro_lex
 open Macro_parse
 open Binding
+open Expander
 open Test
 
 let print_ast ast =
@@ -30,3 +31,5 @@ let () =
   test_core ();
   test_core_fail ();
   test_introduce ();
+  test_expand_id ();
+  test_expand_app ();

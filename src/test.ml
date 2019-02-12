@@ -3,6 +3,7 @@ open Macro_ast
 open Syntax_objects
 open Binding
 open Scope
+open Expander
 
 let so = SyntaxList [SyntaxObj(SQuote (SSymbol "a"), ScopeSet.empty);
           SyntaxList [SyntaxObj(SQuote (SSymbol "b"), ScopeSet.empty)]]
@@ -104,14 +105,14 @@ let test_resolve_false () =
 
 let test_core () =
   print_endline ("\nTEST: Core");
-  let so = adjust_scope (datum_to_syntax (SSymbol "cons")) core_scope add_scope in
+  let so = adjust_scope (mk_syntax (SId "cons")) core_scope add_scope in
   let loc = resolve so in
   print_endline ("<-: " ^ str_syntax so);
   print_endline ("->: " ^ string_of_int loc)
 
 let test_core_fail () =
   print_endline ("\nTEST: Core (False)");
-  let so = datum_to_syntax (SSymbol "lambda") in
+  let so = mk_syntax (SId "cons") in
   let loc = resolve so in
   print_endline ("<-: " ^ str_syntax so);
   print_endline ("->: " ^ string_of_int loc)
@@ -122,3 +123,46 @@ let test_introduce () =
   let res = introduce so in
   print_endline ("<-: " ^ str_syntax so);
   print_endline ("->: " ^ str_syntax res)
+
+let test_expand_id () =
+  print_endline ("\nTEST: Expand Id");
+
+  (* Test primitive id *)
+  print_string "Expand id (primitive): ";
+  let so = mk_syntax (SId "list") in
+  expand (introduce so);
+
+  (* Test core form id *)
+  print_string "Expand id (form): ";
+  let so = mk_syntax (SId "lambda") in
+  try expand (introduce so) with ExpandError _ -> print_endline "bad syntax (good)";
+
+  (* Test variable with binding *)
+  print_string "Expand id (var): ";
+  let so = mk_syntax (SId "x") in
+  let binding = scope () in
+  add_binding so binding;
+  let empty_env = Hashtbl.create 10 in
+  env_extend empty_env binding Variable;
+  expand_id (introduce so) empty_env
+
+let test_expand_app () =
+  print_endline ("\nTEST: Expand App");
+  print_string "Expand app: ";
+  let sc = scope () in
+  let so = SyntaxList [syntax (SId "f") [sc]; SyntaxList []] in
+  let binding = scope () in
+  add_binding (syntax (SId "f") [sc]) binding;
+  let empty_env = Hashtbl.create 10 in
+  env_extend empty_env binding MacroFunction;
+  expand_id_app (introduce so) empty_env;
+
+
+  print_string "Expand app: ";
+  expand (mk_syntax (SApply (SId "one", [])));
+
+  print_string "Expand lambda: ";
+  expand (mk_syntax (SLambda ("x", SId "x")));
+
+  print_string "Expand list: ";
+  expand (mk_syntax (SApply (SApply (SId "curried", [SQuote (SSymbol "1")]), [SQuote (SSymbol "2")])))
