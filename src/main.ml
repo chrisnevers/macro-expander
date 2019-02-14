@@ -21,7 +21,7 @@ let () =
   let ast     = parse (ref tokens) in
 
   print_ast ast;
-
+(*
   test_datum_to_syntax ();
   test_syntax_to_datum ();
   test_add_scope ();
@@ -33,4 +33,5 @@ let () =
   test_introduce ();
   test_expand_id ();
   test_expand_app ();
-  ()
+  () *)
+  test_expand (hd ast)

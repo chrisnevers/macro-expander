@@ -11,7 +11,7 @@ let so = SyntaxList [SyntaxObj(SQuote (SSymbol "a"), ScopeSet.empty);
 let e = SQuote (SList [SSymbol "a"; SList [SSymbol "b"]])
 
 let test_datum_to_syntax () =
-  let so = datum_to_syntax @@ get_datum e in
+  let so = datum_to_syntax_empty @@ get_datum e in
   print_endline ("\nTEST: Datum->Syntax");
   print_endline ("<-: " ^ str_s_exp e);
   print_endline ("->: " ^ str_syntax so)
@@ -119,7 +119,7 @@ let test_core_fail () =
 
 let test_introduce () =
   print_endline ("\nTEST: Introduce");
-  let so = datum_to_syntax (SSymbol "cons") in
+  let so = datum_to_syntax_empty (SSymbol "cons") in
   let res = introduce so in
   print_endline ("<-: " ^ str_syntax so);
   print_endline ("->: " ^ str_syntax res)
@@ -154,8 +154,8 @@ let test_expand_app () =
   let binding = scope () in
   add_binding (syntax (SId "f") [sc]) binding;
   let empty_env = Hashtbl.create 10 in
-  env_extend empty_env binding MacroFunction;
-  expand_id_app (introduce so) empty_env;
+  env_extend empty_env binding (MacroFunction (fun e -> e));
+  expand_id_app (introduce so) empty_env
 
 (*
   print_string "Expand app: ";
@@ -166,3 +166,7 @@ let test_expand_app () =
 
   print_string "Expand list: ";
   expand (mk_syntax (SApply (SApply (SId "curried", [SQuote (SSymbol "1")]), [SQuote (SSymbol "2")]))) *)
+
+let test_expand ast =
+  let s = expand (introduce (sexp_to_syntax_empty ast)) in
+  print_endline (dump_s_exp (syntax_e s));

@@ -1,8 +1,8 @@
-'(x (y))
+;;; '(x (y))
 
-;;; (let-syntax ([one (lambda (stx)
-;;;                     (quote-syntax '1))])
-;;; (one))
+(let-syntax ([one (lambda (stx)
+                    (quote-syntax '1))])
+(one))
 
 ;;; (let-syntax ([thunk (lambda (stx)
 ;;;                         (list (quote-syntax lambda)
