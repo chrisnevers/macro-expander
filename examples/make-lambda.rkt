@@ -1,0 +1,5 @@
+(let-syntax ([x (lambda (stx)
+                    (list (quote-syntax lambda)
+                        (list (quote-syntax x))
+                        (second stx)))])
+(x 1))

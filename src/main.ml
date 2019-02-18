@@ -8,6 +8,7 @@ type s_token =
   | StLBracket
   | StRBracket
   | StId of string
+  | StNum of string
   | StQuote
   | StEOF
 
@@ -17,6 +18,7 @@ let str_s_token t = match t with
   | StLBracket -> "["
   | StRBracket -> "]"
   | StId id -> "Id " ^ id
+  | StNum n -> "Num " ^ n
   | StQuote -> "'"
   | StEOF -> "EOF"
 
@@ -70,6 +72,15 @@ let rec scan_id stream acc =
   | _ -> match acc with
     | _ -> StId acc
 
+let rec scan_num stream acc =
+  let c = peek_char stream in
+  match c with
+  | Some c when is_digit c ->
+    let _ = next_char stream in
+    scan_num stream (acc ^ (Char.escaped c))
+  | _ -> match acc with
+    | _ -> StNum acc
+
 let scan_token stream =
   match next_char stream with
   | None -> StEOF
@@ -78,6 +89,7 @@ let scan_token stream =
   | Some '[' -> StLBracket
   | Some ']' -> StRBracket
   | Some '\'' -> StQuote
+  | Some c when is_digit c -> scan_num stream (Char.escaped c)
   | Some c -> scan_id stream (Char.escaped c)
 
 let rec lex program =
@@ -160,12 +172,12 @@ let rec str_exp e =
   match e with
   | SId id -> id
   | SApp es -> "(" ^ String.concat " " (List.map str_exp es) ^ ")"
-  | SLambda (arg, e) -> "(LAMBDA (" ^ str_exp arg ^ ") " ^ str_exp e ^ ")"
-  | SLetStx (id, rhs, e) -> "(LET-SYNTAX [" ^ str_exp id ^ " " ^ str_exp rhs
+  | SLambda (arg, e) -> "(lambda (" ^ str_exp arg ^ ") " ^ str_exp e ^ ")"
+  | SLetStx (id, rhs, e) -> "(let-syntax [" ^ str_exp id ^ " " ^ str_exp rhs
                             ^ "] " ^ str_exp e ^ ")"
-  | SQuote d -> "(QUOTE " ^ str_datum d ^ ")"
-  | SQuoteStx d -> "(QUOTE-STX " ^ str_datum d ^ ")"
-  | SQuoteStxObj s -> "(QUOTE-STX-OBJ " ^ str_syntax s ^ ")"
+  | SQuote d -> str_datum d
+  | SQuoteStx d -> "(quote-syntax " ^ str_datum d ^ ")"
+  | SQuoteStxObj s -> "(quote-syntax-obj " ^ str_syntax s ^ ")"
 
 and str_syntax s =
   match s with
@@ -207,6 +219,7 @@ and parse_exp input =
     let exp = parse_inside_paren input in
     let _ = expect_token input StRParen in exp
   | StId id -> SId id
+  | StNum n -> SQuote (DSym n)
   | StQuote -> SQuote (parse_datum input)
   | _ -> macro_error ("parse_exp: unexpected exp: " ^ str_s_token token)
 
@@ -255,6 +268,7 @@ and parse_datum input =
   let token = get_token input in
   match token with
   | StId id -> DSym id
+  | StNum n -> DSym n
   | StLParen ->
     let ds = parse_datums input in
     let _ = expect_token input StRParen in
@@ -409,7 +423,7 @@ let core_form_ids = ["lambda"; "let-syntax"; "quote"; "quote-syntax"]
 let core_forms = List.map _id core_form_ids
 
 let core_primitive_ids = ["datum->syntax"; "syntax->datum"; "syntax-e"; "list";
-  "cons"; "first"; "second"; "rest"; "map"]
+  "cons"; "first"; "second"; "rest"; "map"; "+"]
 
 let core_primitives = List.map _id core_primitive_ids
 
@@ -567,4 +581,13 @@ and compile stx =
     | s :: t -> SApp (_rec s :: List.map _rec t)
 
 
-let () = print_endline "Hello world!"
+let () =
+  if Array.length Sys.argv = 1 then
+    print_endline "Usage: ./main.native {filename}"
+  else
+    let program = Sys.argv.(1) in
+    let stream  = get_stream program `File in
+    let tokens  = lex stream in
+    let ast     = parse (ref tokens) in
+    let out     = stx_to_exp @@ expand @@ introduce @@ exp_to_stx ast in
+    print_endline (str_exp out)

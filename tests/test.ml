@@ -8,6 +8,9 @@ let parse_str program =
   let tokens  = lex stream in
   parse (ref tokens)
 
+let expand_str program =
+  expand @@ introduce @@ exp_to_stx @@ parse_str program
+
 let test_get_datum = fun () ->
   let expected = DSym "5" in
   let actual = get_datum (SQuote expected) in
@@ -269,24 +272,19 @@ let test_expand_app = fun () ->
   assert_equal actual so_app
 
 let test_expand_let_stx = fun () ->
-  let ast = parse_str "(let-syntax ([x (lambda (stx) '1)]) (x))" in
-  let so = introduce @@ exp_to_stx ast in
   let so2 = introduce @@ exp_to_stx (SLetStx (SId "x", SLambda (SId "stx",
     SQuote (DSym "1")), SApp [SId "x"])) in
-  let actual1 = expand so in
+  let actual1 = expand_str "(let-syntax ([x (lambda (stx) '1)]) (x))" in
   let actual2 = expand so2 in
   assert_equal (stx_to_exp actual1) (SQuote (DSym "1"));
   assert_equal (stx_to_exp actual2) (SQuote (DSym "1"))
 
 let test_expand_let_stx_list = fun () ->
-  let ast = parse_str "(let-syntax ([x (lambda (stx) (list (quote-syntax lambda) (list (quote-syntax x)) (second stx)))]) (x '1))" in
-  let so = introduce @@ exp_to_stx ast in
-
-  let so2 = introduce @@ exp_to_stx (SLetStx (SId "x", SLambda (SId "stx",
+  let so = introduce @@ exp_to_stx (SLetStx (SId "x", SLambda (SId "stx",
     SApp [SId "list"; SQuoteStx (DSym "lambda"); SApp [SId "list"; SQuoteStx (DSym "x")];
     SApp [SId "second"; SId "stx"]]), SApp [SId "x"; SQuote (DSym "1")])) in
-  let actual1 = expand so in
-  let actual2 = expand so2 in
+  let actual1 = expand_str "(let-syntax ([x (lambda (stx) (list (quote-syntax lambda) (list (quote-syntax x)) (second stx)))]) (x '1))" in
+  let actual2 = expand so in
   (* print_endline ("Actual: " ^ str_exp (stx_to_exp actual));
   print_endline ("Actual: " ^ str_syntax actual); *)
   assert_equal (stx_to_exp actual1) (SLambda (SId "x", SQuote (DSym "1")));
@@ -296,16 +294,20 @@ let test_expand_let_stx_rest = fun () ->
   let so = introduce @@ exp_to_stx (SLetStx (SId "x", SLambda (SId "stx",
     SApp [SId "list"; SQuoteStx (DSym "lambda"); SApp [SId "list"; SQuoteStx (DSym "x")];
     SApp [SId "rest"; SId "stx"]]), SApp [SId "x"; SQuote (DSym "1"); SQuote (DSym "2")])) in
-  let actual = expand so in
-  assert_equal (stx_to_exp actual) (SLambda (SId "x", SApp [SQuote (DSym "1"); SQuote (DSym "2")]))
+  let actual1 = expand_str "(let-syntax ([x (lambda (stx) (list (quote-syntax lambda) (list (quote-syntax x)) (rest stx)))]) (x '1 '2))" in
+  let actual2 = expand so in
+  assert_equal (stx_to_exp actual1) (SLambda (SId "x", SApp [SQuote (DSym "1"); SQuote (DSym "2")]));
+  assert_equal (stx_to_exp actual2) (SLambda (SId "x", SApp [SQuote (DSym "1"); SQuote (DSym "2")]))
 
 let test_expand_let_stx_map = fun () ->
   let so = introduce @@ exp_to_stx (SLetStx (SId "x", SLambda (SId "stx",
     SApp [SId "map"; SLambda (SId "e", SQuote (DSym "booyah"));
       SQuote (DList [DSym "1"; DSym "2"])]),
     SApp [SId "x"])) in
-  let actual = expand so in
-  assert_equal (stx_to_exp actual) (SApp [SQuote (DSym "booyah"); SQuote (DSym "booyah")])
+  let actual1 = expand_str "(let-syntax ([x (lambda (stx) (map (lambda (e) 'booyah) '(1 2)))]) (x))" in
+  let actual2 = expand so in
+  assert_equal (stx_to_exp actual1) (SApp [SQuote (DSym "booyah"); SQuote (DSym "booyah")]);
+  assert_equal (stx_to_exp actual2) (SApp [SQuote (DSym "booyah"); SQuote (DSym "booyah")])
 
 let suite =
   "Tests" >:::

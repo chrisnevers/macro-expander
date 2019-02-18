@@ -8,7 +8,7 @@ TEST_FLAGS=-use-ocamlfind -pkgs ${TEST_PKGS} -Is src
 all: main
 
 main:
-	ocamlbuild ${BUILD_FLAGS} src/main.native --
+	ocamlbuild ${BUILD_FLAGS} src/main.native
 
 test:
 	ocamlbuild ${TEST_FLAGS} tests/test.native --
