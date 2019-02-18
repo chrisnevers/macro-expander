@@ -349,7 +349,7 @@ and eval e tbl =
       Hashtbl.add tbl arg e;
       eval body tbl
     ) es)
-  | _ -> SO (SId "list", ScopeSet.of_list [0])
+  | _ -> macro_error ("Eval: cannot eval " ^ str_exp e)
 
 (* let core_primitive_ids = ["datum->syntax"; "syntax->datum"; "syntax-e"; "list";
   "cons"; "first"; "second"; "rest"; "map"]
