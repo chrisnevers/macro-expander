@@ -325,24 +325,33 @@ and convert t =
   | s -> s
   | _ -> macro_error ("Converted to invalid syntax: " ^ str_syntax t)
 
-and eval e stx =
+and eval e stx tbl =
   (* print_endline ("eval : " ^ str_exp e); *)
   match e with
-  | SQuote _ -> exp_to_stx e
-  | SQuoteStx s -> exp_to_stx e
+  | SId _ | SQuote _ | SQuoteStx _ -> exp_to_stx e
+  | SLambda (arg, body) -> exp_to_stx e
   | SQuoteStxObj s -> s
   | SApp (SId "list"::t) ->
-    let ls = SOList (List.map (fun v -> eval v stx) t) in
-    convert ls
+    convert (SOList (List.map (fun v -> eval v stx tbl) t))
   | SApp (SId "second"::t::[]) ->
-    let SOList ss = stx in
-    List.hd (List.tl ss)
+    let e = stx_to_exp (eval t stx tbl) in
+    let e_stx = Hashtbl.find tbl e in
+    let SOList (_::snd::_) = e_stx in
+    snd
+  | SApp (SId "first"::t::[]) ->
+    let e = stx_to_exp (eval t stx tbl) in
+    let e_stx = Hashtbl.find tbl e in
+    let SOList (fst::_) = e_stx in
+    fst
   | _ -> SO (SId "list", ScopeSet.of_list [0])
 
 and eval_compiled exp =
   MacroFn (fun stx ->
     match exp with
-    | SLambda (arg, body) -> (* introduce *) eval body stx
+    | SLambda (arg, body) ->
+      let binding = Hashtbl.create 10 in
+      Hashtbl.add binding arg stx;
+    (* introduce *) eval body stx binding
   )
 
 (* TBD *)

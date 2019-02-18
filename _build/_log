@@ -1,16 +1,16 @@
 ### Starting build.
 # Target: tests/test.ml.depends, tags: { package(oUnit), extension:ml, file:tests/test.ml, ocaml, ocamldep, quiet }
-ocamlfind ocamldep -package oUnit -modules tests/test.ml > tests/test.ml.depends # cached
+ocamlfind ocamldep -package oUnit -modules tests/test.ml > tests/test.ml.depends
 # Target: src/main.ml.depends, tags: { package(oUnit), extension:ml, file:src/main.ml, ocaml, ocamldep, quiet }
 ocamlfind ocamldep -package oUnit -modules src/main.ml > src/main.ml.depends # cached
 # Target: src/main.cmo, tags: { package(oUnit), byte, compile, extension:cmo, extension:ml, file:src/main.cmo, file:src/main.ml, implem, ocaml, quiet }
 ocamlfind ocamlc -c -package oUnit -I src -o src/main.cmo src/main.ml # cached
 # Target: tests/test.cmo, tags: { package(oUnit), byte, compile, extension:cmo, extension:ml, file:tests/test.cmo, file:tests/test.ml, implem, ocaml, quiet }
-ocamlfind ocamlc -c -package oUnit -I tests -I src -o tests/test.cmo tests/test.ml # cached
+ocamlfind ocamlc -c -package oUnit -I tests -I src -o tests/test.cmo tests/test.ml
 # Target: src/main.cmx, tags: { package(oUnit), compile, extension:cmx, extension:ml, file:src/main.cmx, file:src/main.ml, implem, native, ocaml, quiet }
 ocamlfind ocamlopt -c -package oUnit -I src -o src/main.cmx src/main.ml # cached
 # Target: tests/test.cmx, tags: { package(oUnit), compile, extension:cmx, extension:ml, file:tests/test.cmx, file:tests/test.ml, implem, native, ocaml, quiet }
-ocamlfind ocamlopt -c -package oUnit -I tests -I src -o tests/test.cmx tests/test.ml # cached
+ocamlfind ocamlopt -c -package oUnit -I tests -I src -o tests/test.cmx tests/test.ml
 # Target: tests/test.native, tags: { package(oUnit), dont_link_with, extension:native, file:tests/test.native, link, native, ocaml, program, quiet }
-ocamlfind ocamlopt -linkpkg -package oUnit -I src -I tests src/main.cmx tests/test.cmx -o tests/test.native # cached
+ocamlfind ocamlopt -linkpkg -package oUnit -I src -I tests src/main.cmx tests/test.cmx -o tests/test.native
 # Compilation successful.
