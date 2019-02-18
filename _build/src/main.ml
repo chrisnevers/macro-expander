@@ -325,25 +325,36 @@ and convert t =
   | s -> s
   | _ -> macro_error ("Converted to invalid syntax: " ^ str_syntax t)
 
-and eval e stx tbl =
+and eval e tbl =
   (* print_endline ("eval : " ^ str_exp e); *)
   match e with
-  | SId _ | SQuote _ | SQuoteStx _ -> exp_to_stx e
+  | SId id -> Hashtbl.find tbl e
+  | SQuote _ | SQuoteStx _ -> exp_to_stx e
   | SLambda (arg, body) -> exp_to_stx e
   | SQuoteStxObj s -> s
   | SApp (SId "list"::t) ->
-    convert (SOList (List.map (fun v -> eval v stx tbl) t))
+    convert (SOList (List.map (fun v -> eval v tbl) t))
   | SApp (SId "second"::t::[]) ->
-    let e = stx_to_exp (eval t stx tbl) in
-    let e_stx = Hashtbl.find tbl e in
-    let SOList (_::snd::_) = e_stx in
-    snd
+    let SOList (_::snd::_) = eval t tbl in snd
   | SApp (SId "first"::t::[]) ->
-    let e = stx_to_exp (eval t stx tbl) in
-    let e_stx = Hashtbl.find tbl e in
-    let SOList (fst::_) = e_stx in
-    fst
+    let SOList (fst::_) = eval t tbl in fst
+  | SApp (SId "rest"::t::[]) ->
+    let SOList (_::tl) = eval t tbl in SOList tl
+    (* Cons = create pair *)
+  | SApp (SId "cons"::l::r::[]) ->
+    SOList [eval l tbl; eval r tbl]
+  | SApp (SId "map"::fn::t::[]) ->
+    let SOList es = eval t tbl in
+    let SLambda (arg, body) = stx_to_exp (eval fn tbl) in
+    SOList (List.map (fun e ->
+      Hashtbl.add tbl arg e;
+      eval body tbl
+    ) es)
   | _ -> SO (SId "list", ScopeSet.of_list [0])
+
+(* let core_primitive_ids = ["datum->syntax"; "syntax->datum"; "syntax-e"; "list";
+  "cons"; "first"; "second"; "rest"; "map"]
+ *)
 
 and eval_compiled exp =
   MacroFn (fun stx ->
@@ -351,7 +362,7 @@ and eval_compiled exp =
     | SLambda (arg, body) ->
       let binding = Hashtbl.create 10 in
       Hashtbl.add binding arg stx;
-    (* introduce *) eval body stx binding
+    (* introduce *) eval body binding
   )
 
 (* TBD *)

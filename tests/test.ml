@@ -278,13 +278,20 @@ let test_expand_let_stx_list = fun () ->
   print_endline ("Actual: " ^ str_syntax actual); *)
   assert_equal (stx_to_exp actual) (SLambda (SId "x", SQuote (DSym "1")))
 
-let test_expand_let_stx_first = fun () ->
+let test_expand_let_stx_rest = fun () ->
   let so = introduce @@ exp_to_stx (SLetStx (SId "x", SLambda (SId "stx",
-    SApp [SId "first"; SId "stx"]), SApp [SId "x"; SQuote (DSym "1")])) in
+    SApp [SId "list"; SQuoteStx (DSym "lambda"); SApp [SId "list"; SQuoteStx (DSym "x")];
+    SApp [SId "rest"; SId "stx"]]), SApp [SId "x"; SQuote (DSym "1"); SQuote (DSym "2")])) in
   let actual = expand so in
-  (* print_endline ("Actual: " ^ str_exp (stx_to_exp actual));
-  print_endline ("Actual: " ^ str_syntax actual); *)
-  assert_equal (stx_to_exp actual) (SLambda (SId "x", SId "x"))
+  assert_equal (stx_to_exp actual) (SLambda (SId "x", SApp [SQuote (DSym "1"); SQuote (DSym "2")]))
+
+let test_expand_let_stx_map = fun () ->
+  let so = introduce @@ exp_to_stx (SLetStx (SId "x", SLambda (SId "stx",
+    SApp [SId "map"; SLambda (SId "e", SQuote (DSym "booyah"));
+      SQuote (DList [DSym "1"; DSym "2"])]),
+    SApp [SId "x"])) in
+  let actual = expand so in
+  assert_equal (stx_to_exp actual) (SApp [SQuote (DSym "booyah"); SQuote (DSym "booyah")])
 
 let suite =
   "Tests" >:::
@@ -324,7 +331,8 @@ let suite =
     "expand app" >:: test_expand_app;
     "expand let syntax" >:: test_expand_let_stx;
     "expand let syntax list" >:: test_expand_let_stx_list;
-    "expand let syntax first" >:: test_expand_let_stx_first;
+    "expand let syntax rest" >:: test_expand_let_stx_rest;
+    "expand let syntax map" >:: test_expand_let_stx_map;
   ]
 
 let _ = run_test_tt_main suite
