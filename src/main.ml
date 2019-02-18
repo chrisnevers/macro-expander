@@ -1,6 +1,93 @@
 exception MacroError of string
 let macro_error msg = raise (MacroError msg)
 
+(* Tokens *)
+type s_token =
+  | StLParen
+  | StRParen
+  | StLBracket
+  | StRBracket
+  | StId of string
+  | StQuote
+  | StEOF
+
+let str_s_token t = match t with
+  | StLParen -> "("
+  | StRParen -> ")"
+  | StLBracket -> "["
+  | StRBracket -> "]"
+  | StId id -> "Id " ^ id
+  | StQuote -> "'"
+  | StEOF -> "EOF"
+
+(* Lexer *)
+let get_stream src ty =
+  let open Stream in
+  match ty with
+  | `File -> of_channel @@ open_in src
+  | `String -> of_string src
+
+let is_digit c =
+  let open Char in
+  let asci = code c in
+  asci >= code('0') && asci <= code('9')
+
+let is_alpha c =
+  let open Char in
+  let asci = code c in
+  (asci >= code('A') && asci <= code('Z')) ||
+  (asci >= code('a') && asci <= code('z'))
+
+let is_space c = c = ' ' || c = '\n' || c = '\t'
+
+let is_id c = match c with
+  | '?' | '!' | '\'' | '#' | '$' | '-' | '_' -> true
+  | _ when is_alpha c || is_digit c -> true
+  | _ -> false
+
+let peek_char stream = Stream.peek stream
+
+let rec skip_line stream =
+  let c = Stream.next stream in
+  match c with
+  | '\n' -> next_char stream
+  | _ -> skip_line stream
+
+and next_char stream = try
+  let c = Stream.next stream in
+  match c with
+  | s when is_space c -> next_char stream
+  | ';' -> skip_line stream
+  | c -> Some c
+  with Stream.Failure -> None
+
+let rec scan_id stream acc =
+  let c = peek_char stream in
+  match c with
+  | Some c when is_id c ->
+    let _ = next_char stream in
+    scan_id stream (acc ^ (Char.escaped c))
+  | _ -> match acc with
+    | _ -> StId acc
+
+let scan_token stream =
+  match next_char stream with
+  | None -> StEOF
+  | Some '(' -> StLParen
+  | Some ')' -> StRParen
+  | Some '[' -> StLBracket
+  | Some ']' -> StRBracket
+  | Some '\'' -> StQuote
+  | Some c -> scan_id stream (Char.escaped c)
+
+let rec lex program =
+  let token = scan_token program in
+  match token with
+  | StEOF -> token :: []
+  | _ -> token :: lex program
+
+
+
 (* Gensym: creates unique names/integers *)
 
 module Gensym =
@@ -84,6 +171,102 @@ and str_syntax s =
   match s with
   | SO (e, sc) -> "(StxObj " ^ str_exp e ^ " " ^ str_scope sc ^ ")"
   | SOList ss -> "(StxList [" ^ String.concat " " (List.map str_syntax ss) ^ "])"
+
+
+(* Parser *)
+let next_token tokens = List.hd !tokens
+
+let get_token tokens =
+  let token = next_token tokens in
+  tokens := List.tl !tokens;
+  token
+
+let expect_token tokens expected =
+  let actual = get_token tokens in
+  if actual != expected then
+    macro_error ("Expected " ^ str_s_token expected ^ ", but received: "
+                  ^ str_s_token actual)
+  else ()
+
+let parse_id input =
+  match get_token input with
+  | StId id -> id
+  | _ -> macro_error "expected identifier"
+
+let rec parse_optional_exps input =
+  let next = next_token input in
+  match next with
+  | StRParen -> []
+  | _ -> let e = parse_exp input in
+    e :: parse_optional_exps input
+
+and parse_exp input =
+  let token = get_token input in
+  match token with
+  | StLParen ->
+    let exp = parse_inside_paren input in
+    let _ = expect_token input StRParen in exp
+  | StId id -> SId id
+  | StQuote -> SQuote (parse_datum input)
+  | _ -> macro_error ("parse_exp: unexpected exp: " ^ str_s_token token)
+
+and parse_inside_paren input =
+  let token = get_token input in
+  match token with
+  | StRParen -> macro_error "not expecting: ()"
+  | StId "let-syntax" -> parse_let_syntax input
+  | StId "quote" -> parse_quote input
+  | StId "quote-syntax" -> parse_quote_syntax input
+  | StId "lambda" -> parse_lambda input
+  | StId id ->
+    let exps = parse_optional_exps input in
+    SApp (SId id :: exps)
+  | _ -> macro_error ("parse_inside_paren: did not expect " ^ str_s_token token ^ " in (")
+
+and parse_let_syntax input =
+  let _ = expect_token input StLParen in
+  let _ = expect_token input StLBracket in
+  let id = parse_exp input in
+  let pattern = parse_exp input in
+  let _ = expect_token input StRBracket in
+  let _ = expect_token input StRParen in
+  let body = parse_exp input in
+  SLetStx (id, pattern, body)
+
+and parse_quote input = SQuote (parse_datum input)
+
+and parse_quote_syntax input = SQuoteStx (parse_datum input)
+
+and parse_lambda input =
+  let _ = expect_token input StLParen in
+  let id = parse_exp input in
+  let _ = expect_token input StRParen in
+  let body = parse_exp input in
+  SLambda (id, body)
+
+and parse_datums input =
+  let next = next_token input in
+  match next with
+  | StRParen -> []
+  | _ -> let d = parse_datum input in
+    d :: parse_datums input
+
+and parse_datum input =
+  let token = get_token input in
+  match token with
+  | StId id -> DSym id
+  | StLParen ->
+    let ds = parse_datums input in
+    let _ = expect_token input StRParen in
+    DList ds
+  | StQuote -> DList [DSym "quote"; parse_datum input]
+  | _ -> macro_error ("parse_datum: " ^ str_s_token token)
+
+let rec parse input =
+  let e = parse_exp input in
+  match next_token input with
+  | StEOF -> e
+  | _ -> macro_error "Parse: expected EOF"
 
 let get_datum s =
   match s with
@@ -362,6 +545,7 @@ and eval_compiled exp =
       let binding = Hashtbl.create 10 in
       Hashtbl.add binding arg stx;
     (* introduce *) eval body binding
+    | _ -> macro_error ("Eval_compiled: expected lambda, but received: " ^ str_exp exp)
   )
 
 (* TBD *)
