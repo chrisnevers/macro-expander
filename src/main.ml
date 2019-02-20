@@ -7,6 +7,7 @@ type s_token =
   | StRParen
   | StLBracket
   | StRBracket
+  | StColon
   | StId of string
   | StNum of string
   | StQuote
@@ -17,6 +18,7 @@ let str_s_token t = match t with
   | StRParen -> ")"
   | StLBracket -> "["
   | StRBracket -> "]"
+  | StColon -> ":"
   | StId id -> "Id " ^ id
   | StNum n -> "Num " ^ n
   | StQuote -> "'"
@@ -69,8 +71,7 @@ let rec scan_id stream acc =
   | Some c when is_id c ->
     let _ = next_char stream in
     scan_id stream (acc ^ (Char.escaped c))
-  | _ -> match acc with
-    | _ -> StId acc
+  | _ -> StId acc
 
 let rec scan_num stream acc =
   let c = peek_char stream in
@@ -89,6 +90,7 @@ let scan_token stream =
   | Some '[' -> StLBracket
   | Some ']' -> StRBracket
   | Some '\'' -> StQuote
+  | Some ':' -> StColon
   | Some c when is_digit c -> scan_num stream (Char.escaped c)
   | Some c -> scan_id stream (Char.escaped c)
 
@@ -97,7 +99,6 @@ let rec lex program =
   match token with
   | StEOF -> token :: []
   | _ -> token :: lex program
-
 
 
 (* Gensym: creates unique names/integers *)
@@ -142,6 +143,10 @@ let scope () = Gensym.gen_int ()
     | (quote-syntax <datum>)      literal syntax
 *)
 
+type ty =
+  | TyInt
+  | TyBool
+
 type datum =
   | DSym of string
   | DList of datum list
@@ -150,10 +155,12 @@ type exp =
   | SId           of string
   | SApp          of exp list
   | SLambda       of exp * exp
+  | SLet          of exp * exp * exp
   | SLetStx       of exp * exp * exp
   | SQuote        of datum
   | SQuoteStx     of datum
   | SQuoteStxObj  of syntax
+  | SDefine       of exp * (exp * ty) list * ty * exp
 
 and syntax =
   | SO of exp * scope_set
@@ -168,22 +175,35 @@ let str_scope sc =
   let l = ScopeSet.elements sc in
   "{" ^ String.concat " " (List.map string_of_int l)  ^ "}"
 
+let str_ty t =
+  match t with
+  | TyInt -> "Int"
+  | TyBool -> "Bool"
+
 let rec str_exp e =
   match e with
   | SId id -> id
   | SApp es -> "(" ^ String.concat " " (List.map str_exp es) ^ ")"
   | SLambda (arg, e) -> "(lambda (" ^ str_exp arg ^ ") " ^ str_exp e ^ ")"
-  | SLetStx (id, rhs, e) -> "(let-syntax [" ^ str_exp id ^ " " ^ str_exp rhs
-                            ^ "] " ^ str_exp e ^ ")"
+  | SLet (id, rhs, e) -> "(let ([" ^ str_exp id ^ " " ^ str_exp rhs
+                            ^ "]) " ^ str_exp e ^ ")"
+  | SLetStx (id, rhs, e) -> "(let-syntax ([" ^ str_exp id ^ " " ^ str_exp rhs
+                            ^ "]) " ^ str_exp e ^ ")"
   | SQuote d -> str_datum d
   | SQuoteStx d -> "(quote-syntax " ^ str_datum d ^ ")"
   | SQuoteStxObj s -> "(quote-syntax-obj " ^ str_syntax s ^ ")"
+  | SDefine (id, args, ty, body) -> "(define (" ^ str_exp id ^ " " ^ str_args args
+                                    ^ " : " ^ str_ty ty ^ " " ^ str_exp body
 
 and str_syntax s =
   match s with
   | SO (e, sc) -> "(StxObj " ^ str_exp e ^ " " ^ str_scope sc ^ ")"
   | SOList ss -> "(StxList [" ^ String.concat " " (List.map str_syntax ss) ^ "])"
 
+and str_args s =
+  match s with
+  | (e, ty) :: t -> "[" ^ str_exp e ^ " : " ^ str_ty ty ^ "]" ^ str_args t
+  | [] -> ""
 
 (* Parser *)
 let next_token tokens = List.hd !tokens
@@ -200,9 +220,15 @@ let expect_token tokens expected =
                   ^ str_s_token actual)
   else ()
 
+let parse_ty input =
+  match get_token input with
+  | StId "Int" -> TyInt
+  | StId "Bool" -> TyBool
+  | id -> macro_error ("Parse_ty: Expected a type: " ^ str_s_token id)
+
 let parse_id input =
   match get_token input with
-  | StId id -> id
+  | StId id -> SId id
   | _ -> macro_error "expected identifier"
 
 let rec parse_optional_exps input =
@@ -227,14 +253,26 @@ and parse_inside_paren input =
   let token = get_token input in
   match token with
   | StRParen -> macro_error "not expecting: ()"
+  | StId "let" -> parse_let input
   | StId "let-syntax" -> parse_let_syntax input
   | StId "quote" -> parse_quote input
   | StId "quote-syntax" -> parse_quote_syntax input
   | StId "lambda" -> parse_lambda input
+  | StId "define" -> parse_define input
   | StId id ->
     let exps = parse_optional_exps input in
     SApp (SId id :: exps)
   | _ -> macro_error ("parse_inside_paren: did not expect " ^ str_s_token token ^ " in (")
+
+and parse_let input =
+  let _ = expect_token input StLParen in
+  let _ = expect_token input StLBracket in
+  let id = parse_exp input in
+  let rhs = parse_exp input in
+  let _ = expect_token input StRBracket in
+  let _ = expect_token input StRParen in
+  let body = parse_exp input in
+  SLet (id, rhs, body)
 
 and parse_let_syntax input =
   let _ = expect_token input StLParen in
@@ -256,6 +294,29 @@ and parse_lambda input =
   let _ = expect_token input StRParen in
   let body = parse_exp input in
   SLambda (id, body)
+
+and parse_define input =
+  let _ = expect_token input StLParen in
+  let id = parse_exp input in
+  let args = parse_args input [] in
+  let _ = expect_token input StRParen in
+  let _ = expect_token input StColon in
+  let ty = parse_ty input in
+  let body = parse_exp input in
+  SDefine (id, args, ty, body)
+
+and parse_args input acc =
+  let next = next_token input in
+  match next with
+  | StRParen -> acc
+  | StLBracket ->
+    let _ = expect_token input StLBracket in
+    let e = parse_id input in
+    let _ = expect_token input StColon in
+    let ty = parse_ty input in
+    let _ = expect_token input StRBracket in
+    parse_args input ((e, ty) :: acc)
+  | _ -> macro_error "parse_args: expected arg, i.e. [ or )"
 
 and parse_datums input =
   let next = next_token input in
@@ -295,6 +356,10 @@ let stx_set e sc = SO (e, sc)
 
 let stx_mt e = SO (e, ScopeSet.empty)
 
+let core_scope = scope ()
+
+let stx_core e = SO (e, ScopeSet.of_list [core_scope])
+
 let rec syntax_s s =
   match s with
   | SO (e, sc) -> sc
@@ -308,16 +373,35 @@ let rec datum_to_stx ?(sc=ScopeSet.empty) d =
 
 let rec exp_to_stx ?(sc=ScopeSet.empty) s =
   let _rec e = exp_to_stx e ~sc:sc in
+  let _args e = args_to_stx e ~sc:sc in
+  let _ty e = ty_to_stx e ~sc:sc in
   match s with
   | SId id -> SO (s, sc)
   | SApp es -> SOList (List.map _rec es)
   | SLambda (arg, e) ->
     SOList [_rec (SId "lambda"); _rec arg; _rec e]
+  | SLet (id, rhs, e) ->
+    SOList [_rec (SId "let"); _rec id; _rec rhs; _rec e]
   | SLetStx (id, rhs, e) ->
     SOList [_rec (SId "let-syntax"); _rec id; _rec rhs; _rec e]
   | SQuote d -> SOList [_rec (SId "quote"); datum_to_stx d]
   | SQuoteStx d -> SOList [_rec (SId "quote-syntax"); datum_to_stx d]
   | SQuoteStxObj s -> SOList [_rec (SId "quote-syntax-obj"); s]
+  | SDefine (id, args, ty, e) ->
+    SOList [_rec (SId "define"); SOList (_rec id :: args_to_stx args); _ty ty; _rec e]
+
+and args_to_stx ?(sc=ScopeSet.empty) args =
+  let _rec e = args_to_stx e ~sc:sc in
+  let _exp e = exp_to_stx e ~sc:sc in
+  let _ty e = ty_to_stx e ~sc:sc in
+  match args with
+  | (e, ty) :: t -> SOList [_exp e; _ty ty] :: _rec t
+  | [] -> []
+
+and ty_to_stx ?(sc=ScopeSet.empty) ty =
+  match ty with
+  | TyInt -> stx_core (SId "Int")
+  | TyBool -> stx_core (SId "Bool")
 
 let has_id s exp =
   match s with
@@ -333,14 +417,23 @@ let is_quotestx s = has_id s "quote-syntax"
 let is_quotestxobj s = has_id s "quote-syntax-obj"
 let is_lambda s = has_id s "lambda"
 let is_letstx s = has_id s "let-syntax"
+let is_let s = has_id s "let"
+let is_define s = has_id s "define"
 
 let rec stx_to_datum s =
   match s with
   | SO (SId id, _) -> DSym id
   | SOList ss -> DList (List.map stx_to_datum ss)
 
+let stx_to_ty s =
+  match s with
+  | s when has_id s "Int" -> TyInt
+  | s when has_id s "Bool" -> TyBool
+
 let rec stx_to_exp s =
   let _rec e = stx_to_exp e in
+  let _args e = stx_to_args e in
+  let _ty e = stx_to_ty e in
   match s with
   | SO (e, _) -> e
   | SOList es -> match es with
@@ -348,9 +441,21 @@ let rec stx_to_exp s =
     | s :: t when is_quotestx s -> SQuoteStx (stx_to_datum (List.hd t))
     | s :: t when is_quotestxobj s -> SQuoteStxObj (List.hd t)
     | s :: arg :: body :: [] when is_lambda s -> SLambda (_rec arg, _rec body)
+    | s :: l :: rhs :: body :: [] when is_let s ->
+      SLet (_rec l, _rec rhs, _rec body)
     | s :: l :: rhs :: body :: [] when is_letstx s ->
       SLetStx (_rec l, _rec rhs, _rec body)
+    | s :: SOList (id :: args) :: ty :: body :: [] when is_define s ->
+      SDefine (_rec id, _args args, _ty ty, _rec body)
     | s :: t -> SApp (_rec s :: List.map _rec t)
+
+and stx_to_args args =
+  let _rec e = stx_to_args e in
+  let _exp e = stx_to_exp e in
+  let _ty e = stx_to_ty e in
+  match args with
+  | SOList (e::ty::[]) :: tl -> (_exp e, _ty ty) :: _rec tl
+  | [] -> []
 
 let syntax_e = stx_to_exp
 
@@ -414,8 +519,6 @@ let resolve id =
     check_unambigious max_id candidate_ids;
     Hashtbl.find all_bindings max_id
 
-let core_scope = scope ()
-
 let _id id = SId id
 
 let core_form_ids = ["lambda"; "let-syntax"; "quote"; "quote-syntax"]
@@ -423,7 +526,8 @@ let core_form_ids = ["lambda"; "let-syntax"; "quote"; "quote-syntax"]
 let core_forms = List.map _id core_form_ids
 
 let core_primitive_ids = ["datum->syntax"; "syntax->datum"; "syntax-e"; "list";
-  "cons"; "first"; "second"; "rest"; "map"; "+"]
+  "cons"; "first"; "second"; "third"; "fourth"; "rest"; "map";
+  "+"; "-"; "*"; "/"; "%"; "let"; "nth"; "define"; "or"; "zero?"]
 
 let core_primitives = List.map _id core_primitive_ids
 
@@ -463,6 +567,7 @@ let expand_id s env =
     else if List.mem e core_forms then
       macro_error ("Expand_id: Bad syntax. Use of core form: " ^ str_syntax s)
     else
+      (* let _ = print_endline ("expand id: " ^ str_syntax s) in *)
       match env_lookup env binding with
       | Var -> s
       | _ -> macro_error ("Expand_id: Bad syntax: " ^ str_syntax s)
@@ -473,6 +578,8 @@ let rec expand ?(env=Hashtbl.create 10) stx =
   | SOList es -> match es with
     | s :: t when is_quote s || is_quotestx s || is_quotestxobj s -> stx
     | s :: arg :: body :: [] when is_lambda s -> expand_lambda s arg body env
+    | s :: l :: rhs :: body :: [] when is_let s ->
+      expand_let s l rhs body env
     | s :: l :: rhs :: body :: [] when is_letstx s ->
       expand_let_stx s l rhs body env
     | s :: t when is_id s -> expand_id_app stx env
@@ -487,6 +594,16 @@ and expand_lambda lam arg body env =
   let e = expand (add_scope body sc) ~env:env in
   SOList [lam; id; e]
 
+and expand_let let_id lhs rhs body env =
+  let sc = scope () in
+  let id = add_scope lhs sc in
+  let binding = scope () in
+  add_binding id binding;
+  let nrhs = expand rhs ~env:env in
+  env_extend env binding Var;
+  let nbody = expand (add_scope body sc) ~env:env in
+  SOList [let_id; id; nrhs; nbody]
+
 and expand_let_stx let_id lhs rhs body env =
   let sc = scope () in
   let id = add_scope lhs sc in
@@ -499,6 +616,7 @@ and expand_let_stx let_id lhs rhs body env =
 and expand_id_app stx env =
   let SOList (id::_) = stx in
   let binding = resolve id in
+  (* let _ = print_endline ("expand id app: " ^ str_syntax stx) in *)
   let value = if binding = 0 then Var else env_lookup env binding in
   match value with
   | MacroFn fn -> expand (apply_transformer fn stx) ~env:env
@@ -519,7 +637,7 @@ and convert t =
   match t with
   | SOList [SO (SId "lambda", _); SOList [arg]; body] ->
     exp_to_stx (SLambda (stx_to_exp arg, stx_to_exp body))
-  | s -> s
+  | s -> (* print_endline ("convert: " ^ str_syntax s); *) s
   | _ -> macro_error ("Converted to invalid syntax: " ^ str_syntax t)
 
 and eval e tbl =
@@ -529,12 +647,33 @@ and eval e tbl =
   | SQuote _ | SQuoteStx _ -> exp_to_stx e
   | SLambda (arg, body) -> exp_to_stx e
   | SQuoteStxObj s -> s
+  | SLet (id, rhs, body) ->
+      let rhs_res = eval rhs tbl in
+      (* ASK: will be printing out let, so assign id to itself.
+          eval (SId id) => its value in the env
+            - (second stx) => will evaluate actual result
+            - (+ x_2 x_2) => will not technically evaluate it.
+       *)
+      Hashtbl.add tbl id (exp_to_stx id);
+      let let_id = stx_core (SId "let") in
+      SOList [let_id; stx_mt id; rhs_res; eval body tbl]
   | SApp (SId "list"::t) ->
     convert (SOList (List.map (fun v -> eval v tbl) t))
-  | SApp (SId "second"::t::[]) ->
-    let SOList (_::snd::_) = eval t tbl in snd
+  | SApp (SId "nth"::t::n::[]) -> begin
+    try
+      let SOList res = eval t tbl in
+      let SOList (_::SO (SId pos, _)::[])= eval n tbl in
+      List.nth res ((int_of_string pos) - 1)
+    with Failure _ -> macro_error ("Eval: index out of bounds: " ^ str_exp e)
+    end
   | SApp (SId "first"::t::[]) ->
     let SOList (fst::_) = eval t tbl in fst
+  | SApp (SId "second"::t::[]) ->
+    let SOList (_::snd::_) = eval t tbl in snd
+  | SApp (SId "third"::t::[]) ->
+    let SOList (_::_::thrd::_) = eval t tbl in thrd
+  | SApp (SId "fourth"::t::[]) ->
+    let SOList (_::_::_::frth::_) = eval t tbl in frth
   | SApp (SId "rest"::t::[]) ->
     let SOList (_::tl) = eval t tbl in SOList tl
   | SApp (SId "cons"::l::r::[]) ->
@@ -546,6 +685,10 @@ and eval e tbl =
       Hashtbl.add tbl arg e;
       eval body tbl
     ) es)
+  (* Primtive application, just process args *)
+  | SApp (SId id::t) ->
+    let id = stx_core (SId id) in
+    SOList (id :: List.map (fun e -> eval e tbl) t)
   | _ -> macro_error ("Eval: cannot eval " ^ str_exp e)
 
 (* let core_primitive_ids = ["datum->syntax"; "syntax->datum"; "syntax-e"; "list";
@@ -576,6 +719,8 @@ and compile stx =
     | s :: t when is_quotestx s -> SQuoteStxObj (List.hd t)
     | s :: t when is_quotestxobj s -> SQuoteStxObj (List.hd t)
     | s :: arg :: body :: [] when is_lambda s -> SLambda (_rec arg, _rec body)
+    | s :: l :: rhs :: body :: [] when is_let s ->
+      SLet (_rec l, _rec rhs, _rec body)
     | s :: l :: rhs :: body :: [] when is_letstx s ->
       SLetStx (_rec l, _rec rhs, _rec body)
     | s :: t -> SApp (_rec s :: List.map _rec t)

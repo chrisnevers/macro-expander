@@ -106,6 +106,11 @@ let test_stx_to_exp_app = fun () ->
   let actual = stx_to_exp (exp_to_stx expected) in
   assert_equal actual expected
 
+let test_stx_to_exp_define = fun () ->
+  let expected = parse_str "(define (id [x : Int][y : Int]) : Bool x)" in
+  let actual = stx_to_exp (exp_to_stx expected) in
+  assert_equal actual expected
+
 let test_flip_scope_add = fun () ->
   let open ScopeSet in
   let expected = SO (SId "x", of_list [1]) in
@@ -328,6 +333,7 @@ let suite =
     "stx_to_exp SLambda" >:: test_stx_to_exp_lambda;
     "stx_to_exp SLetStx" >:: test_stx_to_exp_let_stx;
     "stx_to_exp SApp" >:: test_stx_to_exp_app;
+    "stx_to_exp SDefine" >:: test_stx_to_exp_define;
     "flip_scope add" >:: test_flip_scope_add;
     "flip_scope remove" >:: test_flip_scope_remove;
     "add_scope" >:: test_add_scope;
