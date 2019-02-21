@@ -9,7 +9,8 @@ let parse_str program =
   parse (ref tokens)
 
 let expand_str program =
-  expand @@ introduce @@ exp_to_stx @@ parse_str program
+  let ast = parse_str program in
+  expand @@ introduce @@ exp_to_stx ast
 
 let test_get_datum = fun () ->
   let expected = DSym "5" in
@@ -107,7 +108,7 @@ let test_stx_to_exp_app = fun () ->
   assert_equal actual expected
 
 let test_stx_to_exp_define = fun () ->
-  let expected = parse_str "(define (id [x : Int][y : Int]) : Bool x)" in
+  let expected = parse_str "(define (id [x : Int][y : Int]) : Bool x) (id 3 5)" in
   let actual = stx_to_exp (exp_to_stx expected) in
   assert_equal actual expected
 
