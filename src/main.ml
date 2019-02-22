@@ -1,6 +1,15 @@
 exception MacroError of string
 let macro_error msg = raise (MacroError msg)
 
+let last l =
+  let open List in
+  hd @@ rev l
+
+let rm_last l =
+  let open List in
+  rev @@ tl @@ rev l
+    (* List.rev (List.tl (List.rev l)) *)
+
 (* Tokens *)
 type s_token =
   | StLParen
@@ -10,7 +19,7 @@ type s_token =
   | StColon
   | StId of string
   | StNum of string
-  | StBool of string
+  | StHash of string
   | StQuote
   | StEOF
 
@@ -22,7 +31,7 @@ let str_s_token t = match t with
   | StColon -> ":"
   | StId id -> "Id " ^ id
   | StNum n -> "Num " ^ n
-  | StBool n -> "Bool " ^ n
+  | StHash n -> "Bool " ^ n
   | StQuote -> "'"
   | StEOF -> "EOF"
 
@@ -47,7 +56,7 @@ let is_alpha c =
 let is_space c = c = ' ' || c = '\n' || c = '\t'
 
 let is_id c = match c with
-  | '?' | '!' | '\'' | '#' | '$' | '-' | '_' -> true
+  | '?' | '!' | '\'' | '#' | '$' | '-' | '_' | '>' -> true
   | _ when is_alpha c || is_digit c -> true
   | _ -> false
 
@@ -84,12 +93,15 @@ let rec scan_num stream acc =
   | _ -> match acc with
     | _ -> StNum acc
 
-let scan_bool stream =
+let rec scan_hash stream acc =
   match next_char stream with
-  | Some 't' -> StBool "#t"
-  | Some 'f' -> StBool "#f"
-  | Some c -> macro_error ("Scan_bool: Expected #t or #f, but received: "
-                          ^ (Char.escaped c))
+  | Some c when is_id c || c = '\\' ->
+    let _ = next_char stream in
+    scan_hash stream (acc ^ (Char.escaped c))
+  | _ -> match acc with
+    | _ -> StHash acc
+    (* | Some c -> macro_error ("Scan_bool: Expected #t or #f, but received: "
+                          ^ (Char.escaped c)) *)
 
 let scan_token stream =
   match next_char stream with
@@ -100,7 +112,7 @@ let scan_token stream =
   | Some ']' -> StRBracket
   | Some '\'' -> StQuote
   | Some ':' -> StColon
-  | Some '#' -> scan_bool stream
+  | Some '#' -> scan_hash stream "#"
   | Some c when is_digit c -> scan_num stream (Char.escaped c)
   | Some c -> scan_id stream (Char.escaped c)
 
@@ -156,6 +168,14 @@ let scope () = Gensym.gen_int ()
 type ty =
   | TyInt
   | TyBool
+  | TyVoid
+  | TyChar
+  | TyVar of string
+  | TyArray of ty
+  | TyVector of ty list
+  | TyFix of ty
+  | TyForAll of string * ty
+  | TyFn of ty list * ty
 
 type datum =
   | DSym of string
@@ -185,25 +205,35 @@ let str_scope sc =
   let l = ScopeSet.elements sc in
   "{" ^ String.concat " " (List.map string_of_int l)  ^ "}"
 
-let str_ty t =
+let rec str_ty t =
   match t with
   | TyInt -> "Int"
   | TyBool -> "Bool"
+  | TyVoid -> "Void"
+  | TyChar -> "Char"
+  | TyVar s -> s
+  | TyArray ty -> "(Array " ^ str_ty ty ^ ")"
+  | TyVector tys -> "(Vector " ^ String.concat " " (List.map str_ty tys) ^ ")"
+  | TyFix ty -> "(Fix " ^ str_ty ty ^ ")"
+  | TyForAll (v, ty) -> "(Forall " ^ v ^ " " ^ str_ty ty ^ ")"
+  | TyFn (args, ret) -> "(-> " ^ String.concat " " (List.map str_ty args) ^ " "
+                        ^ str_ty ret ^ ")"
+
 
 let rec str_exp e =
   match e with
   | SId id -> id
   | SApp es -> "(" ^ String.concat " " (List.map str_exp es) ^ ")"
-  | SLambda (arg, e) -> "(lambda (" ^ str_exp arg ^ ") " ^ str_exp e ^ ")"
+  | SLambda (arg, e) -> "(lambda (" ^ str_exp arg ^ ")\n\t" ^ str_exp e ^ ")"
   | SLet (id, rhs, e) -> "(let ([" ^ str_exp id ^ " " ^ str_exp rhs
-                            ^ "]) " ^ str_exp e ^ ")"
+                            ^ "])\n" ^ str_exp e ^ ")"
   | SLetStx (id, rhs, e) -> "(let-syntax ([" ^ str_exp id ^ " " ^ str_exp rhs
                             ^ "]) " ^ str_exp e ^ ")"
   | SQuote d -> str_datum d
   | SQuoteStx d -> "(quote-syntax " ^ str_datum d ^ ")"
   | SQuoteStxObj s -> "(quote-syntax-obj " ^ str_syntax s ^ ")"
   | SDefine (id, args, ty, body, nxt) -> "(define (" ^ str_exp id ^ " " ^ str_args args
-                        ^ ") : " ^ str_ty ty ^ " " ^ str_exp body ^ ") " ^ str_exp nxt
+                        ^ ") : " ^ str_ty ty ^ "\n\t" ^ str_exp body ^ ")\n\n" ^ str_exp nxt
 
 and str_syntax s =
   match s with
@@ -230,15 +260,52 @@ let expect_token tokens expected =
                   ^ str_s_token actual)
   else ()
 
-let parse_ty input =
+let rec parse_tys input =
+  let next = next_token input in
+  match next with
+  | StRParen -> []
+  | _ ->
+    let ty = parse_ty input in
+    ty :: parse_tys input
+
+
+and parse_ty input =
   match get_token input with
   | StId "Int" -> TyInt
   | StId "Bool" -> TyBool
-  | id -> macro_error ("Parse_ty: Expected a type: " ^ str_s_token id)
+  | StId "Void" -> TyVoid
+  | StId "Char" -> TyChar
+  | StId id -> TyVar id
+  | StLParen ->
+    let ty = parse_inner_type input in
+    let _ = expect_token input StRParen in
+    ty
+  | ow -> macro_error ("Parse_ty: Expected a type: " ^ str_s_token ow)
 
-let parse_id input =
+and parse_inner_type input =
+  let token = get_token input in
+  match token with
+  | StId "Array" ->
+    let atype = parse_ty input in
+    TyArray atype
+  | StId "Vector" ->
+    let types = parse_tys input in
+    TyVector types
+  | StId "->" ->
+    let ret = parse_tys input in
+    TyFn (rm_last ret, last ret)
+  | StId "Forall" ->
+    let id = parse_id input in
+    let ty = parse_ty input in
+    TyForAll (id, ty)
+  | StId "Fix" ->
+    let ty = parse_ty input in
+    TyFix ty
+  | ow -> macro_error ("Parse_inner_type: Expected a type: " ^ str_s_token ow)
+
+and parse_id input =
   match get_token input with
-  | StId id -> SId id
+  | StId id -> id
   | _ -> macro_error "expected identifier"
 
 let rec parse_optional_exps input =
@@ -257,7 +324,7 @@ and parse_exp input =
     parse_inside_paren input
   | StId id -> SId id
   | StNum n -> SQuote (DSym n)
-  | StBool n -> SQuote (DSym n)
+  | StHash n -> SQuote (DSym n)
   | StQuote -> SQuote (parse_datum input)
   | _ -> macro_error ("parse_exp: unexpected exp: " ^ str_s_token token)
 
@@ -334,7 +401,7 @@ and parse_args input acc =
   | StRParen -> acc
   | StLBracket ->
     let _ = expect_token input StLBracket in
-    let e = parse_id input in
+    let e = SId (parse_id input) in
     let _ = expect_token input StColon in
     let ty = parse_ty input in
     let _ = expect_token input StRBracket in
@@ -422,9 +489,25 @@ and args_to_stx ?(sc=ScopeSet.empty) args =
   | [] -> []
 
 and ty_to_stx ?(sc=ScopeSet.empty) ty =
+  let _rec ty = ty_to_stx ty ~sc:sc in
   match ty with
   | TyInt -> stx_core (SId "Int")
   | TyBool -> stx_core (SId "Bool")
+  | TyVoid -> stx_core (SId "Void")
+  | TyChar -> stx_core (SId "Char")
+  | TyVar id -> stx_core (SId id)
+  | TyArray ty -> SOList [stx_core (SId "Array"); _rec ty]
+  | TyVector tys -> SOList (stx_core (SId "Vector") :: List.map _rec tys)
+  | TyFix ty -> SOList [stx_core (SId "Fix"); _rec ty]
+  | TyForAll (v, ty) -> SOList [stx_core (SId "Forall"); stx_core (SId v); _rec ty]
+  | TyFn (args, ret) -> SOList (stx_core (SId "->") :: List.map _rec args @ _rec ret :: [])
+(*
+  | TyVector tys -> "(Vector " ^ String.concat " " (List.map str_ty tys) ^ ")"
+  | TyFix ty -> "(Fix " ^ str_ty ty ^ ")"
+  | TyForAll (v, ty) -> "(Forall " ^ v ^ " " ^ str_ty ty ^ ")"
+  | TyFn (args, ret) -> "(-> " ^ String.concat " " (List.map str_ty args) ^ " "
+                        ^ str_ty ret ^ ")"
+ *)
 
 let has_id s exp =
   match s with
@@ -452,6 +535,9 @@ let stx_to_ty s =
   match s with
   | s when has_id s "Int" -> TyInt
   | s when has_id s "Bool" -> TyBool
+  | s when has_id s "Void" -> TyVoid
+  | s when has_id s "Char" -> TyChar
+  | SO (SId id, _)-> TyVar id
 
 let rec stx_to_exp s =
   let _rec e = stx_to_exp e in
@@ -551,7 +637,10 @@ let core_forms = List.map _id core_form_ids
 let core_primitive_ids = ["datum->syntax"; "syntax->datum"; "syntax-e"; "list";
   "cons"; "first"; "second"; "third"; "fourth"; "rest"; "map";
   "+"; "-"; "*"; "/"; "%"; "let"; "nth"; "define"; "or"; "if"; "eq?";
-  "and"]
+  "and"; "begin"; "array-set!"; "array-ref"; "print"; "vector";
+  "array"; "vector-ref"; "vector-set!"; "define-type"; "void"; "vector-length";
+  "read"; "zero?"; "pos?"; "not"; ">" ; ">="; "<"; "<="; "while"; "neg?";
+  "unless"]
 
 let core_primitives = List.map _id core_primitive_ids
 
