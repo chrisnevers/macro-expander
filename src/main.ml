@@ -8,7 +8,6 @@ let last l =
 let rm_last l =
   let open List in
   rev @@ tl @@ rev l
-    (* List.rev (List.tl (List.rev l)) *)
 
 (* Tokens *)
 type s_token =
@@ -94,14 +93,12 @@ let rec scan_num stream acc =
     | _ -> StNum acc
 
 let rec scan_hash stream acc =
-  match next_char stream with
+  match peek_char stream with
   | Some c when is_id c || c = '\\' ->
     let _ = next_char stream in
     scan_hash stream (acc ^ (Char.escaped c))
   | _ -> match acc with
     | _ -> StHash acc
-    (* | Some c -> macro_error ("Scan_bool: Expected #t or #f, but received: "
-                          ^ (Char.escaped c)) *)
 
 let scan_token stream =
   match next_char stream with
@@ -347,6 +344,7 @@ and parse_inside_paren input =
   | StRParen -> macro_error "not expecting: ()"
   | StId "let" -> parse_let input
   | StId "let-syntax" -> parse_let_syntax input
+  | StId "define-syntax" -> parse_define_syntax input
   | StId "quote" -> parse_quote input
   | StId "quote-syntax" -> parse_quote_syntax input
   | StId "lambda" -> parse_lambda input
@@ -382,6 +380,14 @@ and parse_let_syntax input =
   let body = parse_exp input in
   let _ = expect_token input StRParen in
   SLetStx (id, pattern, body)
+
+(* like let-syntax but define - for use in imported files *)
+and parse_define_syntax input =
+  let id = parse_exp input in
+  let pattern = parse_exp input in
+  let _ = expect_token input StRParen in
+  let nxt = parse_exp input in
+  SLetStx (id, pattern, nxt)
 
 and parse_quote input =
   let d = parse_datum input in
