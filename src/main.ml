@@ -56,7 +56,7 @@ let is_alpha c =
 let is_space c = c = ' ' || c = '\n' || c = '\t'
 
 let is_id c = match c with
-  | '?' | '!' | '\'' | '#' | '$' | '-' | '_' | '>' -> true
+  | '?' | '!' | '\'' | '#' | '$' | '-' | '_' | '>' | '=' -> true
   | _ when is_alpha c || is_digit c -> true
   | _ -> false
 
@@ -191,6 +191,7 @@ type exp =
   | SQuoteStx     of datum
   | SQuoteStxObj  of syntax
   | SDefine       of exp * (exp * ty) list * ty * exp * exp
+  | SDefineTy     of exp * exp list * exp list * exp
 
 and syntax =
   | SO of exp * scope_set
@@ -234,6 +235,10 @@ let rec str_exp e =
   | SQuoteStxObj s -> "(quote-syntax-obj " ^ str_syntax s ^ ")"
   | SDefine (id, args, ty, body, nxt) -> "(define (" ^ str_exp id ^ " " ^ str_args args
                         ^ ") : " ^ str_ty ty ^ "\n\t" ^ str_exp body ^ ")\n\n" ^ str_exp nxt
+  | SDefineTy (id, vars, tys, nxt) -> "(define-type " ^ str_exp id ^ " " ^
+    String.concat " " (List.map str_exp vars) ^ " " ^
+    String.concat " " (List.map str_exp tys) ^ ")\n" ^ str_exp nxt
+
 
 and str_syntax s =
   match s with
@@ -308,6 +313,14 @@ and parse_id input =
   | StId id -> id
   | _ -> macro_error "expected identifier"
 
+let rec parse_optional_ids input =
+  let next = next_token input in
+  match next with
+  | StId id ->
+    let e = SId (parse_id input) in
+    e :: parse_optional_ids input
+  | _ -> []
+
 let rec parse_optional_exps input =
   let next = next_token input in
   match next with
@@ -338,9 +351,14 @@ and parse_inside_paren input =
   | StId "quote-syntax" -> parse_quote_syntax input
   | StId "lambda" -> parse_lambda input
   | StId "define" -> parse_define input
+  | StId "define-type" -> parse_define_type input
   | StId id ->
     let exps = parse_optional_exps input in
     SApp (SId id :: exps)
+  | StLParen ->
+    let fst = parse_inside_paren input in
+    let exps = parse_optional_exps input in
+    SApp (fst :: exps)
   | _ -> macro_error ("parse_inside_paren: did not expect " ^ str_s_token token ^ " in (")
 
 and parse_let input =
@@ -394,6 +412,20 @@ and parse_define input =
   let _ = expect_token input StRParen in
   let nxt = parse_exp input in
   SDefine (id, args, ty, body, nxt)
+
+and parse_define_type input =
+  let e = SId (parse_id input) in
+  (* print_endline ("parse id: " ^ str_exp e); *)
+  let vars = parse_optional_ids input in
+  (* print_endline ("parse vars: " ^ String.concat " " (List.map str_exp vars)); *)
+  let tys = parse_optional_exps input in
+  (* print_endline ("parse tys: " ^ String.concat " " (List.map str_exp tys)); *)
+  (* let _ = expect_token input StRParen in *)
+  (* print_endline "parse nxt"; *)
+  let nxt = parse_exp input in
+  let ne = SDefineTy (e, vars, tys, nxt) in
+  (* print_endline ("define-type: " ^ str_exp ne); *)
+  ne
 
 and parse_args input acc =
   let next = next_token input in
@@ -479,6 +511,9 @@ let rec exp_to_stx ?(sc=ScopeSet.empty) s =
   | SQuoteStxObj s -> SOList [_rec (SId "quote-syntax-obj"); s]
   | SDefine (id, args, ty, e, nxt) ->
     SOList [_rec (SId "define"); SOList (_rec id :: args_to_stx args); _ty ty; _rec e; _rec nxt]
+  | SDefineTy (id, vars, tys, nxt) ->
+    SOList [_rec (SId "define-type"); _rec id; SOList (List.map _rec vars);
+      SOList (List.map _rec tys); _rec nxt]
 
 and args_to_stx ?(sc=ScopeSet.empty) args =
   let _rec e = args_to_stx e ~sc:sc in
@@ -525,19 +560,36 @@ let is_lambda s = has_id s "lambda"
 let is_letstx s = has_id s "let-syntax"
 let is_let s = has_id s "let"
 let is_define s = has_id s "define"
+let is_define_type s = has_id s "define-type"
 
 let rec stx_to_datum s =
   match s with
   | SO (SId id, _) -> DSym id
   | SOList ss -> DList (List.map stx_to_datum ss)
 
-let stx_to_ty s =
+let rec stx_to_ty s =
   match s with
   | s when has_id s "Int" -> TyInt
   | s when has_id s "Bool" -> TyBool
   | s when has_id s "Void" -> TyVoid
   | s when has_id s "Char" -> TyChar
+  | SOList (s :: [t]) when has_id s "Array" -> TyArray (stx_to_ty t)
+  | SOList (s :: t) when has_id s "Vector" -> TyVector (List.map stx_to_ty t)
+  | SOList (s :: [t]) when has_id s "Fix" -> TyFix (stx_to_ty t)
+  | SOList (s :: v :: [t]) when has_id s "Forall" ->
+    let TyVar id = stx_to_ty v in
+    TyForAll (id, stx_to_ty t)
+  | SOList (s :: t) when has_id s "->" ->
+    let args = List.map stx_to_ty (rm_last t) in
+    let ret = stx_to_ty (last t) in
+    TyFn (args, ret)
   | SO (SId id, _)-> TyVar id
+
+(*
+  | TyFix ty -> SOList [stx_core (SId "Fix"); _rec ty]
+  | TyForAll (v, ty) -> SOList [stx_core (SId "Forall"); stx_core (SId v); _rec ty]
+  | TyFn (args, ret) -> SOList (stx_core (SId "->") :: List.map _rec args @ _rec ret :: [])
+ *)
 
 let rec stx_to_exp s =
   let _rec e = stx_to_exp e in
@@ -556,6 +608,8 @@ let rec stx_to_exp s =
       SLetStx (_rec l, _rec rhs, _rec body)
     | s :: SOList (id :: args) :: ty :: body :: nxt :: [] when is_define s ->
       SDefine (_rec id, _args args, _ty ty, _rec body, _rec nxt)
+    | s :: id :: SOList vars :: SOList tys :: nxt :: [] when is_define_type s ->
+      SDefineTy (_rec id, List.map _rec vars, List.map _rec tys, _rec nxt)
     | s :: t -> SApp (_rec s :: List.map _rec t)
 
 and stx_to_args args =
@@ -640,7 +694,7 @@ let core_primitive_ids = ["datum->syntax"; "syntax->datum"; "syntax-e"; "list";
   "and"; "begin"; "array-set!"; "array-ref"; "print"; "vector";
   "array"; "vector-ref"; "vector-set!"; "define-type"; "void"; "vector-length";
   "read"; "zero?"; "pos?"; "not"; ">" ; ">="; "<"; "<="; "while"; "neg?";
-  "unless"]
+  "unless"; "inst"; "Int"; "Bool"; "Vector"; "Array"; "->"; "Char"; "Void"]
 
 let core_primitives = List.map _id core_primitive_ids
 
@@ -697,6 +751,8 @@ let rec expand ?(env=Hashtbl.create 10) stx =
       expand_let_stx s l rhs body env
     | s :: SOList (id :: args) :: ty :: body :: nxt :: [] when is_define s ->
       expand_define s id args ty body nxt env
+    | s :: id :: SOList vars :: SOList tys :: nxt :: [] when is_define_type s ->
+      expand_define_type s id vars tys nxt env
     | s :: t when is_id s -> expand_id_app stx env
     | s :: t -> expand_app stx env
 
@@ -748,6 +804,24 @@ and expand_define define_id id args ty body nxt env =
   let new_body = expand (add_scope body sc) ~env:env in
   let new_next = expand (add_scope nxt sc) ~env:env in
   SOList [define_id; new_args; ty; new_body; new_next]
+
+and expand_define_type define_id id vars tys nxt env =
+  let sc = scope () in
+  let new_id = add_scope id sc in
+  let new_tys = SOList (List.map (fun ty -> add_scope ty sc) tys) in
+  let SOList all_tys = new_tys in
+  List.iter (fun e ->
+    match e with
+    | SO (_, _) as id
+    | SOList (id::_) ->
+      (* print_endline ("Expand_define_type: Adding binding for: " ^ str_syntax id); *)
+      let binding = scope () in
+      add_binding id binding;
+      env_extend env binding Var;
+    | _ -> macro_error (str_syntax e)
+  ) (new_id :: all_tys);
+  let new_next = expand (add_scope nxt sc) ~env:env in
+  SOList [define_id; new_id; SOList vars; new_tys; new_next]
 
 and expand_id_app stx env =
   let SOList (id::_) = stx in
