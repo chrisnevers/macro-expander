@@ -30,7 +30,7 @@ let str_s_token t = match t with
   | StColon -> ":"
   | StId id -> "Id " ^ id
   | StNum n -> "Num " ^ n
-  | StHash n -> "Bool " ^ n
+  | StHash n -> "Hash " ^ n
   | StQuote -> "'"
   | StEOF -> "EOF"
 
@@ -183,6 +183,7 @@ type exp =
   | SId           of string
   | SApp          of exp list
   | SLambda       of (exp * ty) list * ty * exp
+  | STyLambda     of ty * exp
   | SLet          of exp * exp * exp
   | SLetStx       of exp * exp * exp
   | SQuote        of datum
@@ -225,6 +226,7 @@ let rec str_exp e =
   | SId id -> id
   | SApp es -> "(" ^ String.concat " " (List.map str_exp es) ^ ")"
   | SLambda (args, ty, e) -> "(lambda (" ^ str_args args ^ ") : " ^ str_ty ty ^ "\n\t" ^ str_exp e ^ ")"
+  | STyLambda (ty, e) -> "(Lambda " ^ str_ty ty ^ " " ^ str_exp e ^ ")"
   | SLet (id, rhs, e) -> "(let ([" ^ str_exp id ^ " " ^ str_exp rhs
                             ^ "])\n" ^ str_exp e ^ ")"
   | SLetStx (id, rhs, e) -> "(let-syntax ([" ^ str_exp id ^ " " ^ str_exp rhs
@@ -351,6 +353,7 @@ and parse_inside_paren input =
   | StId "quote" -> parse_quote input
   | StId "quote-syntax" -> parse_quote_syntax input
   | StId "lambda" -> parse_lambda input
+  | StId "Lambda" -> parse_ty_lambda input
   | StId "define" -> parse_define input
   | StId "define-type" -> parse_define_type input
   | StId id ->
@@ -419,6 +422,12 @@ and parse_lambda input =
   let _ = expect_token input StRParen in
   SLambda (ids, ty, body)
 
+and parse_ty_lambda input =
+  let ty = parse_ty input in
+  let exp = parse_exp input in
+  let _ = expect_token input StRParen in
+  STyLambda (ty, exp)
+
 and parse_define input =
   let _ = expect_token input StLParen in
   let id = parse_exp input in
@@ -458,10 +467,10 @@ and parse_args input acc =
       let _ = expect_token input StColon in
       let ty = parse_ty input in
       let _ = expect_token input StRBracket in
-      parse_args input ((e, ty) :: acc)
+      parse_args input (acc @ [(e, ty)])
     | StRBracket -> (* if no type - make syntax type *)
       let _ = expect_token input StRBracket in
-      parse_args input ((e, TySyntax) :: acc)
+      parse_args input (acc @ [(e, TySyntax)])
     end
   | _ -> macro_error "parse_args: expected arg, i.e. [ or )"
 
@@ -530,6 +539,8 @@ let rec exp_to_stx ?(sc=ScopeSet.empty) s =
   | SApp es -> SOList (List.map _rec es)
   | SLambda (args, ty, e) ->
     SOList [_rec (SId "lambda"); SOList (_args args); _ty ty; _rec e]
+  | STyLambda (ty, e) ->
+    SOList [_rec (SId "Lambda"); _ty ty; _rec e]
   | SLet (id, rhs, e) ->
     SOList [_rec (SId "let"); _rec id; _rec rhs; _rec e]
   | SLetStx (id, rhs, e) ->
@@ -579,6 +590,7 @@ let is_quote s = has_id s "quote"
 let is_quotestx s = has_id s "quote-syntax"
 let is_quotestxobj s = has_id s "quote-syntax-obj"
 let is_lambda s = has_id s "lambda"
+let is_tylambda s = has_id s "Lambda"
 let is_letstx s = has_id s "let-syntax"
 let is_let s = has_id s "let"
 let is_define s = has_id s "define"
@@ -620,6 +632,8 @@ let rec stx_to_exp s =
     | s :: t when is_quotestxobj s -> SQuoteStxObj (List.hd t)
     | s :: SOList args :: ty :: body :: [] when is_lambda s ->
       SLambda (_args args, _ty ty, _rec body)
+    | s :: ty :: body :: [] when is_tylambda s ->
+      STyLambda (_ty ty, _rec body)
     | s :: l :: rhs :: body :: [] when is_let s ->
       SLet (_rec l, _rec rhs, _rec body)
     | s :: l :: rhs :: body :: [] when is_letstx s ->
@@ -714,7 +728,7 @@ let core_primitive_ids = ["datum->syntax"; "syntax->datum"; "syntax-e"; "list";
   "array"; "vector-ref"; "vector-set!"; "define-type"; "void"; "vector-length";
   "read"; "zero?"; "pos?"; "not"; ">" ; ">="; "<"; "<="; "while"; "neg?";
   "unless"; "inst"; "Syntax"; "Int"; "Bool"; "Vector"; "Array"; "->"; "Char";
-  "Void"]
+  "Void"; "Lambda"]
 
 let core_primitives = List.map _id core_primitive_ids
 
@@ -759,7 +773,7 @@ let expand_id s env =
     else if List.mem e core_forms then
       macro_error ("Expand_id: Bad syntax. Use of core form: " ^ str_syntax s)
     else
-      (* let _ = print_endline ("expand id: " ^ str_syntax s) in *)
+      let _ = print_endline ("expand id: " ^ str_syntax s) in
       match env_lookup env binding with
       | Var -> s
       | _ -> macro_error ("Expand_id: Bad syntax: " ^ str_syntax s)
@@ -771,6 +785,8 @@ let rec expand ?(env=Hashtbl.create 10) stx =
     | s :: t when is_quote s || is_quotestx s || is_quotestxobj s -> stx
     | s :: SOList args :: ty :: body :: [] when is_lambda s ->
       expand_lambda s args ty body env
+    | s :: ty :: body :: [] when is_tylambda s ->
+      expand_ty_lambda s ty body env
     | s :: l :: rhs :: body :: [] when is_let s ->
       expand_let s l rhs body env
     | s :: l :: rhs :: body :: [] when is_letstx s ->
@@ -784,28 +800,28 @@ let rec expand ?(env=Hashtbl.create 10) stx =
 
 and expand_lambda lam args ty body env =
   let sc = scope () in
-  (* print_endline ("args: " ^ String.concat " " (List.map str_syntax args)); *)
   let new_args = List.map (fun arg ->
     match arg with
-    (* | SO (_, _) as e *)
     | SOList [e;ty] -> SOList [add_scope e sc; ty]
   ) args in
   List.iter (fun e ->
     match e with
     | SOList [id; _] ->
-      (* print_endline ("Expand_lambda: Adding binding for: " ^ str_syntax id); *)
       let binding = scope () in
       add_binding id binding;
       env_extend env binding Var;
   ) new_args;
-  (* print_endline ("new args: " ^ String.concat " " (List.map str_syntax new_args)); *)
-  (* let id = add_scope arg sc in
-  let binding = scope () in
-  add_binding id binding;
-  env_extend env binding Var; *)
-  (* print_endline ("Done processing lambda args"); *)
   let e = expand (add_scope body sc) ~env:env in
   SOList [lam; SOList new_args; ty; e]
+
+and expand_ty_lambda s ty body env =
+  let sc = scope () in
+  let new_ty = add_scope ty sc in
+  let binding = scope () in
+  add_binding new_ty binding;
+  env_extend env binding Var;
+  let e = expand (add_scope body sc) ~env:env in
+  SOList [s; new_ty; e]
 
 and expand_let let_id lhs rhs body env =
   let sc = scope () in
@@ -868,7 +884,7 @@ and expand_define_type define_id id vars tys nxt env =
 and expand_id_app stx env =
   let SOList (id::_) = stx in
   let binding = resolve id in
-  (* print_endline ("expand_id_app: " ^ str_syntax stx); *)
+  print_endline ("expand_id_app: " ^ str_syntax stx);
   let value = if binding = 0 then Var else env_lookup env binding in
   match value with
   | MacroFn fn -> expand (apply_transformer fn stx) ~env:env
