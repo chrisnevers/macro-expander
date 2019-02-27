@@ -55,7 +55,7 @@ let is_alpha c =
 let is_space c = c = ' ' || c = '\n' || c = '\t'
 
 let is_id c = match c with
-  | '?' | '!' | '\'' | '#' | '$' | '-' | '_' | '>' | '=' -> true
+  | '.' | '?' | '!' | '\'' | '#' | '$' | '-' | '_' | '>' | '=' -> true
   | _ when is_alpha c || is_digit c -> true
   | _ -> false
 
@@ -191,6 +191,7 @@ type exp =
   | SQuoteStxObj  of syntax
   | SDefine       of exp * (exp * ty) list * ty * exp * exp
   | SDefineTy     of exp * exp list * exp list * exp
+  | SStxCase   of (exp * exp) list
 
 and syntax =
   | SO of exp * scope_set
@@ -239,7 +240,7 @@ let rec str_exp e =
   | SDefineTy (id, vars, tys, nxt) -> "(define-type " ^ str_exp id ^ " " ^
     String.concat " " (List.map str_exp vars) ^ " " ^
     String.concat " " (List.map str_exp tys) ^ ")\n" ^ str_exp nxt
-
+  | SStxCase es -> "(syntax-case (" ^ str_cases es ^ "))"
 
 and str_syntax s =
   match s with
@@ -249,6 +250,11 @@ and str_syntax s =
 and str_args s =
   match s with
   | (e, ty) :: t -> "[" ^ str_exp e ^ " : " ^ str_ty ty ^ "]" ^ str_args t
+  | [] -> ""
+
+and str_cases s =
+  match s with
+  | (l, r) :: t -> "[" ^ str_exp l ^ " " ^ str_exp r ^ "]" ^ str_cases t
   | [] -> ""
 
 (* Parser *)
@@ -356,6 +362,7 @@ and parse_inside_paren input =
   | StId "Lambda" -> parse_ty_lambda input
   | StId "define" -> parse_define input
   | StId "define-type" -> parse_define_type input
+  | StId "syntax-case" -> parse_syntax_case input
   | StId id ->
     let exps = parse_optional_exps input in
     SApp (SId id :: exps)
@@ -407,9 +414,6 @@ and parse_quote_syntax input =
 
 and parse_lambda input =
   let _ = expect_token input StLParen in
-  (* let _ = expect_token input StLBracket in
-  let id = parse_exp input :: [] in
-  let _ = expect_token input StRBracket in *)
   let ids = parse_args input [] in
   let _ = expect_token input StRParen in
   let ty = begin match next_token input with
@@ -442,17 +446,27 @@ and parse_define input =
 
 and parse_define_type input =
   let e = SId (parse_id input) in
-  (* print_endline ("parse id: " ^ str_exp e); *)
   let vars = parse_optional_ids input in
-  (* print_endline ("parse vars: " ^ String.concat " " (List.map str_exp vars)); *)
   let tys = parse_optional_exps input in
-  (* print_endline ("parse tys: " ^ String.concat " " (List.map str_exp tys)); *)
-  (* let _ = expect_token input StRParen in *)
-  (* print_endline "parse nxt"; *)
   let nxt = parse_exp input in
   let ne = SDefineTy (e, vars, tys, nxt) in
-  (* print_endline ("define-type: " ^ str_exp ne); *)
   ne
+
+and parse_syntax_case input =
+  let es = parse_cases input in
+  let _ = expect_token input StRParen in
+  (* print_endline "Parsed STXCASE"; *)
+  SStxCase es
+
+and parse_cases input =
+  match next_token input with
+  | StRParen -> []
+  | StLBracket ->
+    let _ = expect_token input StLBracket in
+    let l = parse_exp input in
+    let r = parse_exp input in
+    let _ = expect_token input StRBracket in
+    (l, r) :: parse_cases input
 
 and parse_args input acc =
   let next = next_token input in
@@ -553,6 +567,9 @@ let rec exp_to_stx ?(sc=ScopeSet.empty) s =
   | SDefineTy (id, vars, tys, nxt) ->
     SOList [_rec (SId "define-type"); _rec id; SOList (List.map _rec vars);
       SOList (List.map _rec tys); _rec nxt]
+  | SStxCase es ->
+    (* print_endline ("EXP_TO_STX STXCASE"); *)
+    SOList (_rec (SId "syntax-case") :: List.map (fun (l, r) -> SOList [_rec l; _rec r]) es)
 
 and args_to_stx ?(sc=ScopeSet.empty) args =
   let _rec e = args_to_stx e ~sc:sc in
@@ -586,6 +603,10 @@ let is_id s = match s with
   | SO (SId _, _) -> true
   | _ -> false
 
+let is_list s = match s with
+  | SOList _ -> true
+  | _ -> false
+
 let is_quote s = has_id s "quote"
 let is_quotestx s = has_id s "quote-syntax"
 let is_quotestxobj s = has_id s "quote-syntax-obj"
@@ -595,6 +616,7 @@ let is_letstx s = has_id s "let-syntax"
 let is_let s = has_id s "let"
 let is_define s = has_id s "define"
 let is_define_type s = has_id s "define-type"
+let is_stxcase s = has_id s "syntax-case"
 
 let rec stx_to_datum s =
   match s with
@@ -642,7 +664,12 @@ let rec stx_to_exp s =
       SDefine (_rec id, _args args, _ty ty, _rec body, _rec nxt)
     | s :: id :: SOList vars :: SOList tys :: nxt :: [] when is_define_type s ->
       SDefineTy (_rec id, List.map _rec vars, List.map _rec tys, _rec nxt)
-    | s :: t -> SApp (_rec s :: List.map _rec t)
+    | s :: cases when is_stxcase s ->
+      (* print_endline ("STX_TO_EXP STXCASE"); *)
+      SStxCase (stx_to_cases cases)
+    | s :: t ->
+      (* print_endline ("STX_TO_EXP APP"); *)
+      SApp (_rec s :: List.map _rec t)
 
 and stx_to_args args =
   let _rec e = stx_to_args e in
@@ -651,6 +678,13 @@ and stx_to_args args =
   (* print_endline ("args: " ^ String.concat " " (List.map str_syntax args)); *)
   match args with
   | SOList (e::ty::[]) :: tl -> (_exp e, _ty ty) :: _rec tl
+  | [] -> []
+
+and stx_to_cases s =
+  let _rec e = stx_to_cases e in
+  let _exp e = stx_to_exp e in
+  match s with
+  | SOList [l; r] :: t -> (_exp l, _exp r) :: _rec t
   | [] -> []
 
 let syntax_e = stx_to_exp
@@ -717,7 +751,7 @@ let resolve id =
 
 let _id id = SId id
 
-let core_form_ids = ["lambda"; "let-syntax"; "quote"; "quote-syntax"]
+let core_form_ids = ["lambda"; "let-syntax"; "quote"; "quote-syntax"; "syntax-case"]
 
 let core_forms = List.map _id core_form_ids
 
@@ -728,7 +762,7 @@ let core_primitive_ids = ["datum->syntax"; "syntax->datum"; "syntax-e"; "list";
   "array"; "vector-ref"; "vector-set!"; "define-type"; "void"; "vector-length";
   "read"; "zero?"; "pos?"; "not"; ">" ; ">="; "<"; "<="; "while"; "neg?";
   "unless"; "inst"; "Syntax"; "Int"; "Bool"; "Vector"; "Array"; "->"; "Char";
-  "Void"; "Lambda"]
+  "Void"; "Lambda"; "..."]
 
 let core_primitives = List.map _id core_primitive_ids
 
@@ -773,12 +807,13 @@ let expand_id s env =
     else if List.mem e core_forms then
       macro_error ("Expand_id: Bad syntax. Use of core form: " ^ str_syntax s)
     else
-      let _ = print_endline ("expand id: " ^ str_syntax s) in
+      (* let _ = print_endline ("expand id: " ^ str_syntax s) in *)
       match env_lookup env binding with
       | Var -> s
       | _ -> macro_error ("Expand_id: Bad syntax: " ^ str_syntax s)
 
 let rec expand ?(env=Hashtbl.create 10) stx =
+  (* print_endline ("expand: " ^ str_syntax stx); *)
   match stx with
   | SO (e, _) -> expand_id stx env
   | SOList es -> match es with
@@ -795,8 +830,21 @@ let rec expand ?(env=Hashtbl.create 10) stx =
       expand_define s id args ty body nxt env
     | s :: id :: SOList vars :: SOList tys :: nxt :: [] when is_define_type s ->
       expand_define_type s id vars tys nxt env
+    | s :: cases when is_stxcase s -> expand_stx_case s cases env
     | s :: t when is_id s -> expand_id_app stx env
     | s :: t -> expand_app stx env
+
+and expand_stx_case s cases env =
+  (* print_endline ("EXPAND STXCASE"); *)
+  (* Add bound vars from lhs? *)
+  (* let
+  let new_cases = List.map (fun (l, r) ->
+    let
+    let binding = scope () in
+    add_binding id binding;
+    env_extend env binding Var;
+  ) cases; *)
+  SOList (s :: cases)
 
 and expand_lambda lam args ty body env =
   let sc = scope () in
@@ -838,6 +886,7 @@ and expand_let_stx let_id lhs rhs body env =
   let id = add_scope lhs sc in
   let binding = scope () in
   add_binding id binding;
+  (* print_endline ("EXPAND LET STX: " ^ str_syntax rhs); *)
   let value = eval_for_syntax_binding rhs env in
   env_extend env binding value;
   expand (add_scope body sc) ~env:env
@@ -884,7 +933,7 @@ and expand_define_type define_id id vars tys nxt env =
 and expand_id_app stx env =
   let SOList (id::_) = stx in
   let binding = resolve id in
-  print_endline ("expand_id_app: " ^ str_syntax stx);
+  (* print_endline ("expand_id_app: " ^ str_syntax stx); *)
   let value = if binding = 0 then Var else env_lookup env binding in
   match value with
   | MacroFn fn -> expand (apply_transformer fn stx) ~env:env
@@ -970,6 +1019,143 @@ and eval e tbl =
     SOList (id :: List.map (fun e -> eval e tbl) t)
   | _ -> macro_error ("Eval: cannot eval " ^ str_exp e)
 
+and eval_stx_case stx cases =
+  match cases with
+  | (ptn, body) :: t when ptn_match ptn stx ->
+    (* print_endline ("Pattern matched! : " ^ str_exp ptn); *)
+    let env = get_ptn_mapping ptn stx in
+    let res = transform body env in
+    (* print_endline ("STX CASE RESULT: " ^ str_exp (stx_to_exp res)); *)
+    (* Should evaluate? *)
+    (* introduce (eval (stx_to_exp res) (Hashtbl.create 10)) *)
+    introduce res
+  | _ :: t -> eval_stx_case stx t
+  | [] -> macro_error ("Eval Syntax Case: No matching patterns.")
+
+and transform e env =
+  match e with
+  | SApp [] -> exp_to_stx e
+  | SId id -> begin match List.mem_assoc e env with
+    | true ->
+      (* print_endline (id ^ " in env"); *)
+      let (i, s) = List.assoc e env in
+      (* print_endline ("stx: " ^ str_syntax s); *)
+      if i = 1 then s else macro_error ("transform id: not level 1")
+    | false -> exp_to_stx e
+    end
+  | SApp l ->
+    (* print_endline ("TRANSFORM: " ^ str_exp e); *)
+    transform_list l env
+  | _ -> exp_to_stx e
+
+and transform_list l env =
+  match l with
+  | h :: SId "..." :: [] ->
+    (* print_endline ("tl: h :: ... :: []"); *)
+    print_endline (str_exp h);
+    if not (controllable h env) then
+      macro_error ("transform (e ...): not controllable")
+    else
+      let env' = _combine (decompose h env) 0 in
+      (* print_env env'; *)
+      SOList (List.map (fun e -> transform h e) env')
+  | h :: t :: [] ->
+    (* print_endline ("tl: h :: t :: []"); *)
+    SOList [transform h env; transform t env]
+  | h :: t ->
+    let SOList res = transform_list t env in
+    SOList (transform h env :: res)
+
+and print_env env' =
+  List.iter (fun e ->
+    print_endline "env: ";
+    (List.iter (fun (k, (i, s)) ->
+      print_endline ("(" ^ str_exp k ^ " (" ^ string_of_int i ^ ", " ^ str_syntax s ^ ")")) e)
+  ) env'
+
+and _combine l n =
+  let open List in
+  if n > length l then []
+  else map (fun e -> nth e n) l :: _combine l (n + 1)
+
+and decompose p env =
+  let open List in
+  let vars = fv p in
+  (* print_endline ("Decompose pattern:" ^ str_exp p); *)
+  map (fun v ->
+    (* print_endline ("Decompose:" ^ str_exp v); *)
+    let (n, s) = List.assoc v env in
+    (* print_endline ("(n, s): " ^ string_of_int n ^ " " ^  str_syntax s); *)
+    let SOList ss = s in
+    if n = 1 then
+      (v, (n, s)) :: map (fun _ -> (v, (n, s))) ss
+    else
+      map (fun sj -> (v, (n - 1, sj))) ss
+  ) vars
+
+and controllable p env =
+  let vars = fv p in
+  (* print_endline ("CONTROLLABLE VARIABLES:"); *)
+  (* List.iter (fun e -> print_endline (str_exp e)) vars; *)
+  List.exists (fun v ->
+    (* print_endline ("Controllable:" ^ str_exp v); *)
+    let (i, _) = List.assoc v env in
+    i > 1
+  ) vars
+
+and fv p =
+  let open List in
+  let _rec e = fv e in
+  match p with
+  | SId "_" | SId "..." -> []
+  | SId id when not (mem id core_primitive_ids) -> [p]
+  | SApp l -> concat (map _rec l)
+  | _ -> []
+
+and get_ptn_mapping ptn stx =
+  match ptn with
+  | SApp [] | SId "_" -> []
+  | SId _ -> [(ptn, (1, stx))]
+  | SQuote _ -> [(ptn, (1, stx))]
+  | SApp l -> get_ptn_mapping_list l stx
+
+and get_ptn_mapping_list l stx =
+  let open List in
+  let SOList sos = stx in
+  (* print_endline ("get ptn match list: " ^ String.concat " " (List.map str_exp l)); *)
+  match l with
+  | h :: SId "..." :: [] ->
+    let res = concat (map (fun s -> get_ptn_mapping h s) sos) in
+    let (k, (i, _)) = hd res in
+    [(k, (i + 1, SOList (map (fun (_, (_, s)) -> s) res)))]
+    (* map (fun (k, (i, s)) -> (k, (i + 1, s))) res *)
+  | h :: t ->
+    let tl = get_ptn_mapping_list t (SOList (tl sos)) in
+    get_ptn_mapping h (hd sos) @ tl
+  | [] -> []
+
+and ptn_match ptn stx =
+  match ptn with
+  | SApp [] -> stx = SOList []
+  (* Vars, numbers, bool match  *)
+  | SId _ -> true
+  | SQuote _ -> ptn = stx_to_exp stx
+  (* Map stx over first pattern  *)
+  | SApp l -> ptn_match_list l stx
+
+and ptn_match_list l stx =
+  let open List in
+  if is_list stx then
+    let SOList sos = stx in
+    match l with
+    | h :: SId "..." :: [] ->
+      for_all (fun s -> ptn_match h s) sos
+    | h :: t :: [] ->
+      ptn_match h (hd sos) && ptn_match t (hd (tl sos))
+    | h :: t ->
+      ptn_match h (hd sos) && ptn_match_list t (SOList (tl sos))
+  else false
+
 and eval_compiled exp =
   MacroFn (fun stx ->
     match exp with
@@ -977,6 +1163,9 @@ and eval_compiled exp =
       let binding = Hashtbl.create 10 in
       List.iter (fun (arg, ty) -> Hashtbl.add binding arg stx) args;
     (* introduce *) eval body binding
+    | SStxCase es ->
+      (* print_endline ("Eval Compiled: " ^ str_exp exp); *)
+      eval_stx_case stx es
     | _ -> macro_error ("Eval_compiled: expected lambda, but received: " ^ str_exp exp)
   )
 
@@ -986,6 +1175,7 @@ and compile stx =
   let _rec s = compile s in
   match stx with
   | SO (SId id, _) when mem id core_primitive_ids || mem id core_form_ids -> SId id
+  | SO (SId "_", _) -> SId "_"
   | SO (SId id, _) ->
     (* print_endline ("resolving: " ^ id); *)
     let binding = resolve stx in
@@ -1002,6 +1192,8 @@ and compile stx =
     | s :: SOList (id :: args) :: ty :: body :: nxt :: [] when is_define s ->
       (* print_endline "compile define"; *)
       SDefine (_rec id, compile_args args, stx_to_ty ty, _rec body, _rec nxt)
+    | s :: cases when is_stxcase s ->
+      SStxCase (List.map (fun (SOList [l;r]) -> (_rec l, _rec r)) cases)
     | s :: t -> SApp (_rec s :: List.map _rec t)
 
 and compile_args args =
