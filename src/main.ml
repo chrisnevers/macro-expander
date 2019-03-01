@@ -362,7 +362,6 @@ and parse_inside_paren input =
   let token = get_token input in
   match token with
   | StRParen -> macro_error "not expecting: ()"
-  | StId "let" -> parse_let input
   | StId "let-syntax" -> parse_let_syntax input
   | StId "define-syntax" -> parse_define_syntax input
   | StId "quote" -> parse_quote input
@@ -381,16 +380,6 @@ and parse_inside_paren input =
     SApp (fst :: exps)
   | _ -> macro_error ("parse_inside_paren: did not expect " ^ str_s_token token ^ " in (")
 
-and parse_let input =
-  let _ = expect_token input StLParen in
-  let _ = expect_token input StLBracket in
-  let id = parse_exp input in
-  let rhs = parse_exp input in
-  let _ = expect_token input StRBracket in
-  let _ = expect_token input StRParen in
-  let body = parse_exp input in
-  let _ = expect_token input StRParen in
-  SLet (id, rhs, body)
 
 and parse_let_syntax input =
   let _ = expect_token input StLParen in
@@ -565,7 +554,7 @@ let rec exp_to_stx ?(sc=ScopeSet.empty) s =
   | STyLambda (ty, e) ->
     SOList [_rec (SId "Lambda"); _ty ty; _rec e]
   | SLet (id, rhs, e) ->
-    SOList [_rec (SId "let"); _rec id; _rec rhs; _rec e]
+    SOList [_rec (SId "let"); SOList [SOList[_rec id; _rec rhs]]; _rec e]
   | SLetStx (id, rhs, e) ->
     SOList [_rec (SId "let-syntax"); _rec id; _rec rhs; _rec e]
   | SQuote d -> SOList [_rec (SId "quote"); datum_to_stx d]
@@ -665,7 +654,7 @@ let rec stx_to_exp s =
       SLambda (_args args, _ty ty, _rec body)
     | s :: ty :: body :: [] when is_tylambda s ->
       STyLambda (_ty ty, _rec body)
-    | s :: l :: rhs :: body :: [] when is_let s ->
+    | s :: SOList [SOList [l; rhs]] :: body :: [] when is_let s ->
       SLet (_rec l, _rec rhs, _rec body)
     | s :: l :: rhs :: body :: [] when is_letstx s ->
       SLetStx (_rec l, _rec rhs, _rec body)
@@ -832,7 +821,7 @@ let expand_id s env =
       | _ -> macro_error ("Expand_id: Bad syntax: " ^ str_syntax s)
 
 let rec expand ?(env=Hashtbl.create 10) stx =
-  print_endline ("expand: " ^ str_syntax stx);
+  (* print_endline ("expand: " ^ str_syntax stx); *)
   match stx with
   | SO (e, _) -> expand_id stx env
   | SOList es -> match es with
@@ -841,7 +830,7 @@ let rec expand ?(env=Hashtbl.create 10) stx =
       expand_lambda s args ty body env
     | s :: ty :: body :: [] when is_tylambda s ->
       expand_ty_lambda s ty body env
-    | s :: l :: rhs :: body :: [] when is_let s ->
+    | s :: SOList [SOList [l; rhs]] :: body :: [] when is_let s ->
       expand_let s l rhs body env
     | s :: l :: rhs :: body :: [] when is_letstx s ->
       expand_let_stx s l rhs body env
@@ -899,7 +888,7 @@ and expand_let let_id lhs rhs body env =
   let nrhs = expand rhs ~env:env in
   env_extend env binding Var;
   let nbody = expand (add_scope body sc) ~env:env in
-  SOList [let_id; id; nrhs; nbody]
+  SOList [let_id; SOList [SOList [id; nrhs]]; nbody]
 
 and expand_let_stx let_id lhs rhs body env =
   let sc = scope () in
@@ -1003,7 +992,7 @@ and eval e tbl =
        *)
       Hashtbl.add tbl id (exp_to_stx id);
       let let_id = stx_core (SId "let") in
-      SOList [let_id; stx_mt id; rhs_res; eval body tbl]
+      SOList [let_id; SOList [SOList [stx_mt id; rhs_res]]; eval body tbl]
   | SApp (SId "list"::t) ->
     convert (SOList (List.map (fun v -> eval v tbl) t))
   | SApp (SId "nth"::t::n::[]) -> begin
@@ -1233,8 +1222,9 @@ and compile stx =
     | s :: t when is_quote s -> SQuote (stx_to_datum (List.hd t))
     | s :: t when is_quotestx s -> SQuoteStxObj (List.hd t)
     | s :: t when is_quotestxobj s -> SQuoteStxObj (List.hd t)
-    | s :: SOList args :: ty :: body :: [] when is_lambda s -> SLambda (compile_args args, stx_to_ty ty, _rec body)
-    | s :: l :: rhs :: body :: [] when is_let s ->
+    | s :: SOList args :: ty :: body :: [] when is_lambda s ->
+      SLambda (compile_args args, stx_to_ty ty, _rec body)
+    | s :: SOList [SOList [l; rhs]] :: body :: [] when is_let s ->
       SLet (_rec l, _rec rhs, _rec body)
     | s :: l :: rhs :: body :: [] when is_letstx s ->
       SLetStx (_rec l, _rec rhs, _rec body)
@@ -1255,7 +1245,9 @@ let expand_macros filename =
   let stream  = get_stream program `File in
   let tokens  = lex stream in
   let ast     = parse (ref tokens) in
-  let out     = stx_to_exp @@ expand @@ introduce @@ exp_to_stx ast in
+  let stx     = exp_to_stx ast in
+  (* print_endline ("program: " ^ str_syntax stx); *)
+  let out     = stx_to_exp @@ expand @@ introduce @@ stx in
   str_exp out
 
 let () =

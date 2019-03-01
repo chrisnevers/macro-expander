@@ -1,7 +1,7 @@
 (let-syntax ([discriminate (lambda ([stx])
-    (let ([a (nth stx 2)])
-    (let ([b (nth stx 3)])
-    (let ([c (nth stx 4)])
+    (let ((a (nth stx 2)))
+    (let ((b (nth stx 3)))
+    (let ((c (nth stx 4)))
     (- (* b b) (+ 4 a c))))))])
 
 (discriminate 1 2 3))
