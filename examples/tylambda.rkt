@@ -1,1 +1,1 @@
-(lambda ([x : Int]) : Int (+ x 5))
+(lambda ((x : Int)) : Int (+ x 5))

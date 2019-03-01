@@ -1,5 +1,5 @@
 (define-syntax and
-    (lambda ([stx])
+    (lambda ((stx))
         (if (second stx)
             (third stx) #f)))
 

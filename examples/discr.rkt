@@ -1,4 +1,4 @@
-(let-syntax ([discriminate (lambda ([stx])
+(let-syntax ([discriminate (lambda ((stx))
     (let ((a (nth stx 2)))
     (let ((b (nth stx 3)))
     (let ((c (nth stx 4)))

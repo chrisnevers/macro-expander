@@ -191,7 +191,7 @@ type datum =
 type exp =
   | SId           of string
   | SApp          of exp list
-  | SLambda       of (exp * ty) list * ty * exp
+  | SLambda       of exp list * ty * exp
   | STyLambda     of ty * exp
   | SLet          of exp * exp * exp
   | SLetStx       of exp * exp * exp
@@ -235,7 +235,7 @@ let rec str_exp e =
   match e with
   | SId id -> id
   | SApp es -> "(" ^ String.concat " " (List.map str_exp es) ^ ")"
-  | SLambda (args, ty, e) -> "(lambda (" ^ str_args args ^ ") : " ^ str_ty ty ^ "\n\t" ^ str_exp e ^ ")"
+  | SLambda (args, ty, e) -> "(lambda (" ^ String.concat " " (List.map str_exp args) ^ ") : " ^ str_ty ty ^ "\n\t" ^ str_exp e ^ ")"
   | STyLambda (ty, e) -> "(Lambda " ^ str_ty ty ^ " " ^ str_exp e ^ ")"
   | SLet (id, rhs, e) -> "(let ([" ^ str_exp id ^ " " ^ str_exp rhs
                             ^ "])\n" ^ str_exp e ^ ")"
@@ -352,6 +352,7 @@ and parse_exp input =
   match token with
   | StLParen ->
     parse_inside_paren input
+  | StColon -> SId ":"
   | StId id -> SId id
   | StNum n -> SQuote (DSym n)
   | StHash n -> SQuote (DSym n)
@@ -366,7 +367,7 @@ and parse_inside_paren input =
   | StId "define-syntax" -> parse_define_syntax input
   | StId "quote" -> parse_quote input
   | StId "quote-syntax" -> parse_quote_syntax input
-  | StId "lambda" -> parse_lambda input
+  (* | StId "lambda" -> parse_lambda input *)
   | StId "Lambda" -> parse_ty_lambda input
   | StId "define" -> parse_define input
   | StId "define-type" -> parse_define_type input
@@ -410,7 +411,7 @@ and parse_quote_syntax input =
   let _ = expect_token input StRParen in
   SQuoteStx d
 
-and parse_lambda input =
+(* and parse_lambda input =
   let _ = expect_token input StLParen in
   let ids = parse_args input [] in
   let _ = expect_token input StRParen in
@@ -422,7 +423,7 @@ and parse_lambda input =
   end in
   let body = parse_exp input in
   let _ = expect_token input StRParen in
-  SLambda (ids, ty, body)
+  SLambda (ids, ty, body) *)
 
 and parse_ty_lambda input =
   let ty = parse_ty input in
@@ -550,7 +551,7 @@ let rec exp_to_stx ?(sc=ScopeSet.empty) s =
   | SId id -> SO (s, sc)
   | SApp es -> SOList (List.map _rec es)
   | SLambda (args, ty, e) ->
-    SOList [_rec (SId "lambda"); SOList (_args args); _ty ty; _rec e]
+    SOList [_rec (SId "lambda"); SOList (List.map _rec args); _rec (SId ":"); _ty ty; _rec e]
   | STyLambda (ty, e) ->
     SOList [_rec (SId "Lambda"); _ty ty; _rec e]
   | SLet (id, rhs, e) ->
@@ -650,8 +651,8 @@ let rec stx_to_exp s =
     | s :: t when is_quote s -> SQuote (stx_to_datum (List.hd t))
     | s :: t when is_quotestx s -> SQuoteStx (stx_to_datum (List.hd t))
     | s :: t when is_quotestxobj s -> SQuoteStxObj (List.hd t)
-    | s :: SOList args :: ty :: body :: [] when is_lambda s ->
-      SLambda (_args args, _ty ty, _rec body)
+    | s :: SOList args :: colon :: ty :: body :: [] when is_lambda s ->
+      SLambda (List.map _rec args, _ty ty, _rec body)
     | s :: ty :: body :: [] when is_tylambda s ->
       STyLambda (_ty ty, _rec body)
     | s :: SOList [SOList [l; rhs]] :: body :: [] when is_let s ->
@@ -770,7 +771,7 @@ let core_primitive_ids = ["datum->syntax"; "syntax->datum"; "syntax-e"; "list";
   "array"; "vector-ref"; "vector-set!"; "define-type"; "void"; "vector-length";
   "read"; "zero?"; "pos?"; "not"; ">" ; ">="; "<"; "<="; "while"; "neg?";
   "unless"; "inst"; "Syntax"; "Int"; "Bool"; "Vector"; "Array"; "->"; "Char";
-  "Void"; "Lambda"; "..."]
+  "Void"; "Lambda"; "..."; ":"]
 
 let core_primitives = List.map _id core_primitive_ids
 
@@ -826,8 +827,12 @@ let rec expand ?(env=Hashtbl.create 10) stx =
   | SO (e, _) -> expand_id stx env
   | SOList es -> match es with
     | s :: t when is_quote s || is_quotestx s || is_quotestxobj s -> stx
-    | s :: SOList args :: ty :: body :: [] when is_lambda s ->
+    | s :: SOList args :: colon :: ty :: body :: [] when is_lambda s ->
+      (* print_endline "expand typed lambda"; *)
       expand_lambda s args ty body env
+    | s :: SOList args :: body :: [] when is_lambda s ->
+      (* print_endline "expand lambda"; *)
+      expand_lambda s args (stx_core (SId "Syntax")) body env
     | s :: ty :: body :: [] when is_tylambda s ->
       expand_ty_lambda s ty body env
     | s :: SOList [SOList [l; rhs]] :: body :: [] when is_let s ->
@@ -859,17 +864,17 @@ and expand_lambda lam args ty body env =
   let sc = scope () in
   let new_args = List.map (fun arg ->
     match arg with
-    | SOList [e;ty] -> SOList [add_scope e sc; ty]
+    | SOList (e::t) -> SOList (add_scope e sc::t)
   ) args in
   List.iter (fun e ->
     match e with
-    | SOList [id; _] ->
+    | SOList (id::_) ->
       let binding = scope () in
       add_binding id binding;
       env_extend env binding Var;
   ) new_args;
   let e = expand (add_scope body sc) ~env:env in
-  SOList [lam; SOList new_args; ty; e]
+  SOList [lam; SOList new_args; stx_core (SId ":"); ty; e]
 
 and expand_ty_lambda s ty body env =
   let sc = scope () in
@@ -963,11 +968,11 @@ and convert t =
   (* print_endline ("Converting: " ^ str_syntax t); *)
   match t with
   | SOList [SO (SId "lambda", _); SOList args; body] ->
-    exp_to_stx (SLambda (convert_args args, TySyntax, stx_to_exp body))
-  | s ->
-    (* print_endline ("convert: " ^ str_syntax s); *)
-    s
-  | _ -> macro_error ("Converted to invalid syntax: " ^ str_syntax t)
+    exp_to_stx (SLambda (List.map stx_to_exp args, TySyntax, stx_to_exp body))
+  | SOList [SO (SId "lambda", _); SOList args; SO (SId ":", _); ty; body] ->
+    exp_to_stx (SLambda (List.map stx_to_exp args, stx_to_ty ty, stx_to_exp body))
+  | s -> s
+  (* | _ -> macro_error ("Converted to invalid syntax: " ^ str_syntax t) *)
 
 and convert_args args =
   match args with
@@ -981,6 +986,7 @@ and eval e tbl =
   | SId id -> Hashtbl.find tbl e
   | SQuote _ | SQuoteStx _ -> exp_to_stx e
   | SLambda (args, ty, body) ->
+    (* print_endline ("eval lambda"); *)
     exp_to_stx (SLambda (args, ty, stx_to_exp (eval body tbl)))
   | SQuoteStxObj s -> s
   | SLet (id, rhs, body) ->
@@ -1019,7 +1025,7 @@ and eval e tbl =
     let SOList es = eval t tbl in
     let SLambda (args, ty, body) = stx_to_exp (eval fn tbl) in
     SOList (List.map (fun e ->
-      List.iter (fun (arg, ty) -> Hashtbl.add tbl arg e) args;
+      List.iter (fun arg -> Hashtbl.add tbl arg e) args;
       eval body tbl
     ) es)
   (* Primtive application, just process args *)
@@ -1031,10 +1037,10 @@ and eval e tbl =
 and eval_stx_case stx cases =
   match cases with
   | (ptn, body) :: t when ptn_match ptn stx ->
-    print_endline ("Pattern matched! : " ^ str_exp ptn);
+    (* print_endline ("Pattern matched! : " ^ str_exp ptn); *)
     let env = get_ptn_mapping ptn stx in
     let res = transform body env in
-    print_endline ("STX CASE RESULT: " ^ str_exp (stx_to_exp res));
+    (* print_endline ("STX CASE RESULT: " ^ str_exp (stx_to_exp res)); *)
     (* Should evaluate? *)
     (* introduce (eval (stx_to_exp res) (Hashtbl.create 10)) *)
     introduce res
@@ -1042,7 +1048,7 @@ and eval_stx_case stx cases =
   | [] -> macro_error ("Eval Syntax Case: No matching patterns.")
 
 and transform e env =
-  print_endline ("transform : " ^ str_exp e);
+  (* print_endline ("transform : " ^ str_exp e); *)
   match e with
   | SApp [] -> exp_to_stx e
   | SId id -> begin match List.mem_assoc e env with
@@ -1061,19 +1067,19 @@ and transform_list l env =
   match l with
   | h :: SId "..." :: [] ->
     (* print_endline ("tl: h :: ... :: []"); *)
-    print_endline ("transform list ... : " ^ str_exp h);
+    (* print_endline ("transform list ... : " ^ str_exp h); *)
     if not (controllable h env) then
       macro_error ("transform (e ...): not controllable")
     else
-      print_endline ("controllable");
+      (* print_endline ("controllable"); *)
       let env' = decompose h env in
       print_env env';
       SOList (List.map (fun e -> transform h e) env')
   | h :: t :: [] ->
-    print_endline ("transform end of list");
+    (* print_endline ("transform end of list"); *)
     SOList [transform h env; transform t env]
   | h :: t ->
-    print_endline ("transform list h: " ^ str_exp h);
+    (* print_endline ("transform list h: " ^ str_exp h); *)
     let SOList res = transform_list t env in
     SOList (transform h env :: res)
 
@@ -1198,8 +1204,9 @@ and eval_compiled exp =
   MacroFn (fun stx ->
     match exp with
     | SLambda (args, ty, body) ->
+      (* print_endline ("eval compiled: " ^ str_exp exp); *)
       let binding = Hashtbl.create 10 in
-      List.iter (fun (arg, ty) -> Hashtbl.add binding arg stx) args;
+      List.iter (fun (SApp (arg::_)) -> Hashtbl.add binding arg stx) args;
     (* introduce *) eval body binding
     | SStxCase es ->
       (* print_endline ("Eval Compiled: " ^ str_exp exp); *)
@@ -1222,8 +1229,9 @@ and compile stx =
     | s :: t when is_quote s -> SQuote (stx_to_datum (List.hd t))
     | s :: t when is_quotestx s -> SQuoteStxObj (List.hd t)
     | s :: t when is_quotestxobj s -> SQuoteStxObj (List.hd t)
-    | s :: SOList args :: ty :: body :: [] when is_lambda s ->
-      SLambda (compile_args args, stx_to_ty ty, _rec body)
+    | s :: SOList args :: colon :: ty :: body :: [] when is_lambda s ->
+      (* print_endline ("compile ty lambda"); *)
+      SLambda (List.map _rec args, stx_to_ty ty, _rec body)
     | s :: SOList [SOList [l; rhs]] :: body :: [] when is_let s ->
       SLet (_rec l, _rec rhs, _rec body)
     | s :: l :: rhs :: body :: [] when is_letstx s ->
