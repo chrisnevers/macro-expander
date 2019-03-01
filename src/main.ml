@@ -10,6 +10,16 @@ let (==>) i n =
 
 let _max l r = if l >= r then l else r
 
+let make_hashtable assc =
+  let rec add_to_table assc tbl =
+    match assc with
+    | (k, v) :: t -> Hashtbl.replace tbl k v; add_to_table t tbl
+    | [] -> ()
+    | _ -> macro_error "Error creating hashtable from association list"
+  in
+  let tbl = Hashtbl.create 10 in
+  let _ = add_to_table assc tbl in tbl
+
 let last l =
   let open List in
   hd @@ rev l
@@ -983,7 +993,8 @@ and convert_args args =
 and eval e tbl =
   (* print_endline ("eval : " ^ str_exp e); *)
   match e with
-  | SId id -> Hashtbl.find tbl e
+  | SId id -> begin try Hashtbl.find tbl e
+    with Not_found -> macro_error ("Eval: " ^ id ^ " not declared") end
   | SQuote _ | SQuoteStx _ -> exp_to_stx e
   | SLambda (args, ty, body) ->
     (* print_endline ("eval lambda"); *)
@@ -1067,13 +1078,11 @@ and transform_list l env =
   match l with
   | h :: SId "..." :: [] ->
     (* print_endline ("tl: h :: ... :: []"); *)
-    (* print_endline ("transform list ... : " ^ str_exp h); *)
     if not (controllable h env) then
       macro_error ("transform (e ...): not controllable")
     else
       (* print_endline ("controllable"); *)
       let env' = decompose h env in
-      print_env env';
       SOList (List.map (fun e -> transform h e) env')
   | h :: t :: [] ->
     (* print_endline ("transform end of list"); *)
@@ -1082,6 +1091,7 @@ and transform_list l env =
     (* print_endline ("transform list h: " ^ str_exp h); *)
     let SOList res = transform_list t env in
     SOList (transform h env :: res)
+  | [] -> SOList []
 
 and print_env env' =
   List.iter (fun e ->
@@ -1100,7 +1110,7 @@ and decompose p env =
   let open List in
   (* find deepest level (k, (n,_)) in *)
   let mx_lvl = fold_left (fun acc (k, (n, _)) -> _max n acc) 0 env in
-  print_endline ("max level: " ^ string_of_int mx_lvl);
+  (* print_endline ("max level: " ^ string_of_int mx_lvl); *)
   let len =
       if mx_lvl = 0 then 0
       else
@@ -1111,31 +1121,19 @@ and decompose p env =
             acc
         ) 0 env
   in
-  print_endline ("length: " ^ string_of_int len);
+  (* print_endline ("length: " ^ string_of_int len); *)
   let range = (0 ==> len - 1) in
-  print_endline (String.concat " " (List.map string_of_int range));
+  (* print_endline (String.concat " " (List.map string_of_int range)); *)
   map (fun i ->
-    print_endline ("mapping");
+    (* print_endline ("mapping"); *)
     map (fun (k, (n, v)) ->
-      print_endline ("k:" ^ str_exp k);
-      print_endline ("(n, s): " ^ string_of_int n ^ " " ^  str_syntax v);
+      (* print_endline ("k: " ^ str_exp k); *)
+      (* print_endline ("(n, s): " ^ string_of_int n ^ " " ^  str_syntax v); *)
       let value = if n = mx_lvl then (n - 1, (stx_get v i)) else (n, v) in
       (k, value)
     ) env
   ) range
 
-  (* let vars = fv p in
-  (* print_endline ("Decompose pattern:" ^ str_exp p); *)
-  map (fun v ->
-    (* print_endline ("Decompose:" ^ str_exp v); *)
-    let (n, s) = List.assoc v env in
-    (* print_endline ("(n, s): " ^ string_of_int n ^ " " ^  str_syntax s); *)
-    let SOList ss = s in
-    if n = 1 then
-      (v, (n, s)) :: map (fun _ -> (v, (n, s))) ss
-    else
-      map (fun sj -> (v, (n - 1, sj))) ss
-  ) vars *)
 
 and controllable p env =
   let vars = fv p in
@@ -1143,8 +1141,10 @@ and controllable p env =
   (* List.iter (fun e -> print_endline (str_exp e)) vars; *)
   List.exists (fun v ->
     (* print_endline ("Controllable:" ^ str_exp v); *)
+    try
     let (i, _) = List.assoc v env in
     i > 1
+    with Not_found -> macro_error ("Controllable: " ^ str_exp v ^ " not in env")
   ) vars
 
 and fv p =
@@ -1169,14 +1169,37 @@ and get_ptn_mapping_list l stx =
   (* print_endline ("get ptn match list: " ^ String.concat " " (List.map str_exp l)); *)
   match l with
   | h :: SId "..." :: [] ->
-    let res = concat (map (fun s -> get_ptn_mapping h s) sos) in
-    let (k, (i, _)) = hd res in
-    [(k, (i + 1, SOList (map (fun (_, (_, s)) -> s) res)))]
+    (* print_endline ("ptn map: " ^ str_exp h); *)
+    let envs = (map (fun s -> get_ptn_mapping h s) sos) in
+    (* print_string ("... envs: "); *)
+    (* print_env envs; *)
+    let flat_env = concat envs in
+    let no_dupes = tbl_to_list @@ make_hashtable flat_env in
+    map (fun (k, (i, _)) ->
+      let mps = List.filter (fun (j, (_, s)) -> k = j) flat_env in
+      (k, (i + 1, SOList (List.map (fun re -> snd @@ List.assoc k re) envs)))
+    ) no_dupes
+    (* print_endline ("ptn mapping list: "); *)
+    (* print_env [ne]; *)
+    (* ne *)
+    (* let (k, (i, _)) = hd res in
+    [(k, (i + 1, SOList (map (fun (_, (_, s)) -> s) res)))] *)
+
     (* map (fun (k, (i, s)) -> (k, (i + 1, s))) res *)
   | h :: t ->
     let tl = get_ptn_mapping_list t (SOList (tl sos)) in
     get_ptn_mapping h (hd sos) @ tl
   | [] -> []
+
+and tbl_to_list = fun h -> Hashtbl.fold (fun k v acc -> (k, v) :: acc) h []
+
+(* and merge envs =
+  match envs with
+  | [] -> []
+  | h :: tl ->
+    List.map (fun (k, (n, v)) ->
+      (k, (n + 1, SOList (map (fun (_, (_, s)) -> s) envs)))
+    ) h *)
 
 and ptn_match ptn stx =
   match ptn with
