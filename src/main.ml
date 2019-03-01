@@ -1,6 +1,15 @@
 exception MacroError of string
 let macro_error msg = raise (MacroError msg)
 
+let (==>) i n =
+  let rec _helper acc = function
+  | n when n >= i -> _helper (n :: acc) (n - 1)
+  | _ -> acc
+  in
+  _helper [] n
+
+let _max l r = if l >= r then l else r
+
 let last l =
   let open List in
   hd @@ rev l
@@ -689,6 +698,16 @@ and stx_to_cases s =
 
 let syntax_e = stx_to_exp
 
+let stx_length s =
+  match s with
+  | SO _ -> 1
+  | SOList t -> List.length t
+
+let stx_get s i =
+  match s with
+  | SOList t -> List.nth t i
+  | SO _ -> if i = 1 then s else macro_error ("stx length: Cannot get " ^ string_of_int i ^ " " ^ str_syntax s)
+
 let rec adjust_scope stxobj scope op =
   let _rec s = adjust_scope s scope op in
   match stxobj with
@@ -813,7 +832,7 @@ let expand_id s env =
       | _ -> macro_error ("Expand_id: Bad syntax: " ^ str_syntax s)
 
 let rec expand ?(env=Hashtbl.create 10) stx =
-  (* print_endline ("expand: " ^ str_syntax stx); *)
+  print_endline ("expand: " ^ str_syntax stx);
   match stx with
   | SO (e, _) -> expand_id stx env
   | SOList es -> match es with
@@ -833,6 +852,7 @@ let rec expand ?(env=Hashtbl.create 10) stx =
     | s :: cases when is_stxcase s -> expand_stx_case s cases env
     | s :: t when is_id s -> expand_id_app stx env
     | s :: t -> expand_app stx env
+    | _ -> macro_error ("expand: " ^ str_syntax stx)
 
 and expand_stx_case s cases env =
   (* print_endline ("EXPAND STXCASE"); *)
@@ -1022,10 +1042,10 @@ and eval e tbl =
 and eval_stx_case stx cases =
   match cases with
   | (ptn, body) :: t when ptn_match ptn stx ->
-    (* print_endline ("Pattern matched! : " ^ str_exp ptn); *)
+    print_endline ("Pattern matched! : " ^ str_exp ptn);
     let env = get_ptn_mapping ptn stx in
     let res = transform body env in
-    (* print_endline ("STX CASE RESULT: " ^ str_exp (stx_to_exp res)); *)
+    print_endline ("STX CASE RESULT: " ^ str_exp (stx_to_exp res));
     (* Should evaluate? *)
     (* introduce (eval (stx_to_exp res) (Hashtbl.create 10)) *)
     introduce res
@@ -1033,13 +1053,13 @@ and eval_stx_case stx cases =
   | [] -> macro_error ("Eval Syntax Case: No matching patterns.")
 
 and transform e env =
+  print_endline ("transform : " ^ str_exp e);
   match e with
   | SApp [] -> exp_to_stx e
   | SId id -> begin match List.mem_assoc e env with
     | true ->
       (* print_endline (id ^ " in env"); *)
       let (i, s) = List.assoc e env in
-      (* print_endline ("stx: " ^ str_syntax s); *)
       if i = 1 then s else macro_error ("transform id: not level 1")
     | false -> exp_to_stx e
     end
@@ -1052,17 +1072,19 @@ and transform_list l env =
   match l with
   | h :: SId "..." :: [] ->
     (* print_endline ("tl: h :: ... :: []"); *)
-    print_endline (str_exp h);
+    print_endline ("transform list ... : " ^ str_exp h);
     if not (controllable h env) then
       macro_error ("transform (e ...): not controllable")
     else
-      let env' = _combine (decompose h env) 0 in
-      (* print_env env'; *)
+      print_endline ("controllable");
+      let env' = decompose h env in
+      print_env env';
       SOList (List.map (fun e -> transform h e) env')
   | h :: t :: [] ->
-    (* print_endline ("tl: h :: t :: []"); *)
+    print_endline ("transform end of list");
     SOList [transform h env; transform t env]
   | h :: t ->
+    print_endline ("transform list h: " ^ str_exp h);
     let SOList res = transform_list t env in
     SOList (transform h env :: res)
 
@@ -1078,9 +1100,36 @@ and _combine l n =
   if n > length l then []
   else map (fun e -> nth e n) l :: _combine l (n + 1)
 
+(* return list eveery element at deepest level *)
 and decompose p env =
   let open List in
-  let vars = fv p in
+  (* find deepest level (k, (n,_)) in *)
+  let mx_lvl = fold_left (fun acc (k, (n, _)) -> _max n acc) 0 env in
+  print_endline ("max level: " ^ string_of_int mx_lvl);
+  let len =
+      if mx_lvl = 0 then 0
+      else
+        fold_left (fun acc (_, (i, v)) ->
+          if i = mx_lvl then
+            _max acc (stx_length v)
+          else
+            acc
+        ) 0 env
+  in
+  print_endline ("length: " ^ string_of_int len);
+  let range = (0 ==> len - 1) in
+  print_endline (String.concat " " (List.map string_of_int range));
+  map (fun i ->
+    print_endline ("mapping");
+    map (fun (k, (n, v)) ->
+      print_endline ("k:" ^ str_exp k);
+      print_endline ("(n, s): " ^ string_of_int n ^ " " ^  str_syntax v);
+      let value = if n = mx_lvl then (n - 1, (stx_get v i)) else (n, v) in
+      (k, value)
+    ) env
+  ) range
+
+  (* let vars = fv p in
   (* print_endline ("Decompose pattern:" ^ str_exp p); *)
   map (fun v ->
     (* print_endline ("Decompose:" ^ str_exp v); *)
@@ -1091,7 +1140,7 @@ and decompose p env =
       (v, (n, s)) :: map (fun _ -> (v, (n, s))) ss
     else
       map (fun sj -> (v, (n - 1, sj))) ss
-  ) vars
+  ) vars *)
 
 and controllable p env =
   let vars = fv p in
