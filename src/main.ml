@@ -776,8 +776,8 @@ let core_forms = List.map _id core_form_ids
 
 let core_primitive_ids = ["datum->syntax"; "syntax->datum"; "syntax-e"; "list";
   "cons"; "first"; "second"; "third"; "fourth"; "rest"; "map";
-  "+"; "-"; "*"; "/"; "%"; "let"; "nth"; "define"; "or"; "if"; "eq?";
-  "and"; "begin"; "array-set!"; "array-ref"; "print"; "vector";
+  "+"; "-"; "*"; "/"; "%"; "let"; "nth"; "define"; "if"; "eq?";
+  "begin"; "array-set!"; "array-ref"; "print"; "vector";
   "array"; "vector-ref"; "vector-set!"; "define-type"; "void"; "vector-length";
   "read"; "zero?"; "pos?"; "not"; ">" ; ">="; "<"; "<="; "while"; "neg?";
   "unless"; "inst"; "Syntax"; "Int"; "Bool"; "Vector"; "Array"; "->"; "Char";
@@ -859,15 +859,6 @@ let rec expand ?(env=Hashtbl.create 10) stx =
     | _ -> macro_error ("expand: " ^ str_syntax stx)
 
 and expand_stx_case s cases env =
-  (* print_endline ("EXPAND STXCASE"); *)
-  (* Add bound vars from lhs? *)
-  (* let
-  let new_cases = List.map (fun (l, r) ->
-    let
-    let binding = scope () in
-    add_binding id binding;
-    env_extend env binding Var;
-  ) cases; *)
   SOList (s :: cases)
 
 and expand_lambda lam args ty body env =
@@ -910,7 +901,6 @@ and expand_let_stx let_id lhs rhs body env =
   let id = add_scope lhs sc in
   let binding = scope () in
   add_binding id binding;
-  (* print_endline ("EXPAND LET STX: " ^ str_syntax rhs); *)
   let value = eval_for_syntax_binding rhs env in
   env_extend env binding value;
   expand (add_scope body sc) ~env:env
@@ -957,7 +947,6 @@ and expand_define_type define_id id vars tys nxt env =
 and expand_id_app stx env =
   let SOList (id::_) = stx in
   let binding = resolve id in
-  (* print_endline ("expand_id_app: " ^ str_syntax stx); *)
   let value = if binding = 0 then Var else env_lookup env binding in
   match value with
   | MacroFn fn -> expand (apply_transformer fn stx) ~env:env
@@ -971,7 +960,7 @@ and expand_app stx env =
 
 and eval_for_syntax_binding stx env =
   let so = expand stx ~env:env in
-  eval_compiled (compile so)
+  eval_compiled (compile so) env
 
 (* TBD *)
 and convert t =
@@ -1048,18 +1037,21 @@ and eval e tbl =
 and eval_stx_case stx cases =
   match cases with
   | (ptn, body) :: t when ptn_match ptn stx ->
-    (* print_endline ("Pattern matched! : " ^ str_exp ptn); *)
+    (* print_endline ("Pattern match: " ^ str_exp ptn ^ " : " ^ str_syntax stx); *)
     let env = get_ptn_mapping ptn stx in
     let res = transform body env in
-    (* print_endline ("STX CASE RESULT: " ^ str_exp (stx_to_exp res)); *)
-    (* Should evaluate? *)
-    (* introduce (eval (stx_to_exp res) (Hashtbl.create 10)) *)
-    introduce res
+    let e = ref (introduce res) in
+    let sc = scope () in
+    e := add_scope !e sc;
+    (* Reapply scopes lost from converting from stx->exp *)
+    List.iter (fun s -> e := add_scope !e s) (0 ==> sc);
+    !e
   | _ :: t -> eval_stx_case stx t
   | [] -> macro_error ("Eval Syntax Case: No matching patterns.")
 
 and transform e env =
   (* print_endline ("transform : " ^ str_exp e); *)
+  let _rec e = transform e env in
   match e with
   | SApp [] -> exp_to_stx e
   | SId id -> begin match List.mem_assoc e env with
@@ -1072,6 +1064,8 @@ and transform e env =
   | SApp l ->
     (* print_endline ("TRANSFORM: " ^ str_exp e); *)
     transform_list l env
+  | SLet (id,ie,be) ->
+    SOList [stx_core (SId "let"); SOList [SOList [_rec id; _rec ie]]; _rec be]
   | _ -> exp_to_stx e
 
 and transform_list l env =
@@ -1171,21 +1165,12 @@ and get_ptn_mapping_list l stx =
   | h :: SId "..." :: [] ->
     (* print_endline ("ptn map: " ^ str_exp h); *)
     let envs = (map (fun s -> get_ptn_mapping h s) sos) in
-    (* print_string ("... envs: "); *)
-    (* print_env envs; *)
     let flat_env = concat envs in
     let no_dupes = tbl_to_list @@ make_hashtable flat_env in
     map (fun (k, (i, _)) ->
       let mps = List.filter (fun (j, (_, s)) -> k = j) flat_env in
       (k, (i + 1, SOList (List.map (fun re -> snd @@ List.assoc k re) envs)))
     ) no_dupes
-    (* print_endline ("ptn mapping list: "); *)
-    (* print_env [ne]; *)
-    (* ne *)
-    (* let (k, (i, _)) = hd res in
-    [(k, (i + 1, SOList (map (fun (_, (_, s)) -> s) res)))] *)
-
-    (* map (fun (k, (i, s)) -> (k, (i + 1, s))) res *)
   | h :: t ->
     let tl = get_ptn_mapping_list t (SOList (tl sos)) in
     get_ptn_mapping h (hd sos) @ tl
@@ -1193,13 +1178,6 @@ and get_ptn_mapping_list l stx =
 
 and tbl_to_list = fun h -> Hashtbl.fold (fun k v acc -> (k, v) :: acc) h []
 
-(* and merge envs =
-  match envs with
-  | [] -> []
-  | h :: tl ->
-    List.map (fun (k, (n, v)) ->
-      (k, (n + 1, SOList (map (fun (_, (_, s)) -> s) envs)))
-    ) h *)
 
 and ptn_match ptn stx =
   match ptn with
@@ -1215,15 +1193,16 @@ and ptn_match_list l stx =
   if is_list stx then
     let SOList sos = stx in
     match l with
+    | [] -> length sos = 0
     | h :: SId "..." :: [] ->
-      for_all (fun s -> ptn_match h s) sos
+      for_all (fun s -> ptn_match h s) sos && length sos > 0
     | h :: t :: [] ->
-      ptn_match h (hd sos) && ptn_match t (hd (tl sos))
+      ptn_match h (hd sos) && ptn_match t (hd (tl sos)) && length (tl (tl sos)) = 0
     | h :: t ->
       ptn_match h (hd sos) && ptn_match_list t (SOList (tl sos))
   else false
 
-and eval_compiled exp =
+and eval_compiled exp env =
   MacroFn (fun stx ->
     match exp with
     | SLambda (args, ty, body) ->
@@ -1233,7 +1212,7 @@ and eval_compiled exp =
     (* introduce *) eval body binding
     | SStxCase es ->
       (* print_endline ("Eval Compiled: " ^ str_exp exp); *)
-      eval_stx_case stx es
+      expand (eval_stx_case stx es) ~env:env
     | _ -> macro_error ("Eval_compiled: expected lambda, but received: " ^ str_exp exp)
   )
 
@@ -1245,9 +1224,9 @@ and compile stx =
   | SO (SId id, _) when mem id core_primitive_ids || mem id core_form_ids -> SId id
   | SO (SId "_", _) -> SId "_"
   | SO (SId id, _) ->
-    (* print_endline ("resolving: " ^ id); *)
     let binding = resolve stx in
-    SId (id ^ "_" ^ string_of_int binding)
+    (* SId (id ^ "_" ^ string_of_int binding) *)
+    SId id
   | SOList es -> match es with
     | s :: t when is_quote s -> SQuote (stx_to_datum (List.hd t))
     | s :: t when is_quotestx s -> SQuoteStxObj (List.hd t)
