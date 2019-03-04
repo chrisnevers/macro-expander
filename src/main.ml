@@ -268,7 +268,7 @@ and str_syntax s =
 
 and str_args s =
   match s with
-  | (e, ty) :: t -> "[" ^ str_exp e ^ " : " ^ str_ty ty ^ "]" ^ str_args t
+  | (e, ty) :: t -> "(" ^ str_exp e ^ " : " ^ str_ty ty ^ ")" ^ str_args t
   | [] -> ""
 
 and str_cases s =
@@ -640,6 +640,7 @@ let is_let s = has_id s "let"
 let is_define s = has_id s "define"
 let is_define_type s = has_id s "define-type"
 let is_stxcase s = has_id s "syntax-case"
+let is_case s = has_id s "case"
 
 let rec stx_to_datum s =
   match s with
@@ -794,7 +795,7 @@ let core_primitive_ids = ["datum->syntax"; "syntax->datum"; "syntax-e"; "list";
   "array"; "vector-ref"; "vector-set!"; "define-type"; "void"; "vector-length";
   "read"; "zero?"; "pos?"; "not"; ">" ; ">="; "<"; "<="; "while"; "neg?";
   "unless"; "inst"; "Syntax"; "Int"; "Bool"; "Vector"; "Array"; "->"; "Char";
-  "Void"; "Lambda"; "..."; ":"]
+  "Void"; "Lambda"; "..."; ":"; "case"]
 
 let core_primitives = List.map _id core_primitive_ids
 
@@ -866,6 +867,8 @@ let rec expand ?(env=Hashtbl.create 10) stx =
       expand_define s id args ty body nxt env
     | s :: id :: SOList vars :: SOList tys :: nxt :: [] when is_define_type s ->
       expand_define_type s id vars tys nxt env
+    | s :: x :: cases when is_case s ->
+      expand_case s x cases env
     | s :: cases when is_stxcase s -> expand_stx_case s cases env
     | s :: t when is_id s -> expand_id_app stx env
     | s :: t -> expand_app stx env
@@ -873,6 +876,26 @@ let rec expand ?(env=Hashtbl.create 10) stx =
 
 and expand_stx_case s cases env =
   SOList (s :: cases)
+
+and add_scope_and_binding sc e env =
+  let ne = add_scope e sc in
+  let binding = scope () in
+  add_binding ne binding;
+  env_extend env binding Var;
+  ne
+
+and expand_case s x cases env =
+  let open List in
+  let sc = scope () in
+  let new_cases = map (fun case ->
+    match case with
+    | SOList [p1; t2] -> begin match p1 with
+      | SO _ as e -> SOList [add_scope_and_binding sc e env; add_scope t2 sc]
+      | SOList ids -> SOList [SOList (List.map (fun id -> add_scope_and_binding sc id env) ids); add_scope t2 sc]
+      end
+    | _ -> macro_error "case needs pattern and body expression"
+  ) cases in
+  SOList (s :: x :: new_cases)
 
 and expand_lambda lam args ty body env =
   let sc = scope () in
