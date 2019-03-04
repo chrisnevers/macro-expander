@@ -210,7 +210,7 @@ type exp =
   | SQuoteStxObj  of syntax
   | SDefine       of exp * (exp * ty) list * ty * exp * exp
   | SDefineTy     of exp * exp list * exp list * exp
-  | SStxCase   of (exp * exp) list
+  | SStxCase      of string list * (exp * exp) list
 
 and syntax =
   | SO of exp * scope_set
@@ -259,7 +259,7 @@ let rec str_exp e =
   | SDefineTy (id, vars, tys, nxt) -> "(define-type " ^ str_exp id ^ " " ^
     String.concat " " (List.map str_exp vars) ^ " " ^
     String.concat " " (List.map str_exp tys) ^ ")\n" ^ str_exp nxt
-  | SStxCase es -> "(syntax-case (" ^ str_cases es ^ "))"
+  | SStxCase (ids, es) -> "(syntax-case (" ^ String.concat " " ids ^ ") " ^ str_cases es ^ ")"
 
 and str_syntax s =
   match s with
@@ -275,6 +275,9 @@ and str_cases s =
   match s with
   | (l, r) :: t -> "[" ^ str_exp l ^ " " ^ str_exp r ^ "]" ^ str_cases t
   | [] -> ""
+
+let _id id = SId id
+
 
 (* Parser *)
 let next_token tokens = List.hd !tokens
@@ -372,7 +375,10 @@ and parse_exp input =
 and parse_inside_paren input =
   let token = get_token input in
   match token with
-  | StRParen -> macro_error "not expecting: ()"
+  | StRParen ->
+    (* empty tuple *)
+    SApp []
+    (* macro_error "not expecting: ()" *)
   | StId "let-syntax" -> parse_let_syntax input
   | StId "define-syntax" -> parse_define_syntax input
   | StId "quote" -> parse_quote input
@@ -462,10 +468,17 @@ and parse_define_type input =
   ne
 
 and parse_syntax_case input =
+  let _ = expect_token input StLParen in
+  let ids = List.map (fun a ->
+    match a with
+    | SId id -> id
+    | _ -> macro_error ("syntax-case can only introduce identifiers")
+  ) (parse_optional_exps input) in
+  (* let _ = expect_token input StRParen in *)
   let es = parse_cases input in
   let _ = expect_token input StRParen in
   (* print_endline "Parsed STXCASE"; *)
-  SStxCase es
+  SStxCase (ids, es)
 
 and parse_cases input =
   match next_token input with
@@ -476,6 +489,7 @@ and parse_cases input =
     let r = parse_exp input in
     let _ = expect_token input StRBracket in
     (l, r) :: parse_cases input
+  | t -> macro_error ("Parse_cases: " ^ str_s_token t)
 
 and parse_args input acc =
   let next = next_token input in
@@ -576,9 +590,9 @@ let rec exp_to_stx ?(sc=ScopeSet.empty) s =
   | SDefineTy (id, vars, tys, nxt) ->
     SOList [_rec (SId "define-type"); _rec id; SOList (List.map _rec vars);
       SOList (List.map _rec tys); _rec nxt]
-  | SStxCase es ->
+  | SStxCase (ids, es) ->
     (* print_endline ("EXP_TO_STX STXCASE"); *)
-    SOList (_rec (SId "syntax-case") :: List.map (fun (l, r) -> SOList [_rec l; _rec r]) es)
+    SOList (_rec (SId "syntax-case") :: SOList (List.map (fun id -> _rec (SId id)) ids) :: List.map (fun (l, r) -> SOList [_rec l; _rec r]) es)
 
 and args_to_stx ?(sc=ScopeSet.empty) args =
   let _rec e = args_to_stx e ~sc:sc in
@@ -673,9 +687,10 @@ let rec stx_to_exp s =
       SDefine (_rec id, _args args, _ty ty, _rec body, _rec nxt)
     | s :: id :: SOList vars :: SOList tys :: nxt :: [] when is_define_type s ->
       SDefineTy (_rec id, List.map _rec vars, List.map _rec tys, _rec nxt)
-    | s :: cases when is_stxcase s ->
+    | s :: SOList ids :: cases when is_stxcase s ->
       (* print_endline ("STX_TO_EXP STXCASE"); *)
-      SStxCase (stx_to_cases cases)
+      let ides = List.map _rec ids in
+      SStxCase (List.map (fun (SId id) -> id) ides, stx_to_cases cases)
     | s :: t ->
       (* print_endline ("STX_TO_EXP APP"); *)
       SApp (_rec s :: List.map _rec t)
@@ -767,8 +782,6 @@ let resolve id =
     let max_id = hd (get_largest_scope candidate_ids 0 []) in
     check_unambigious max_id candidate_ids;
     Hashtbl.find all_bindings max_id
-
-let _id id = SId id
 
 let core_form_ids = ["lambda"; "let-syntax"; "quote"; "quote-syntax"; "syntax-case"]
 
@@ -1034,9 +1047,9 @@ and eval e tbl =
     SOList (id :: List.map (fun e -> eval e tbl) t)
   | _ -> macro_error ("Eval: cannot eval " ^ str_exp e)
 
-and eval_stx_case stx cases =
+and eval_stx_case stx ids cases =
   match cases with
-  | (ptn, body) :: t when ptn_match ptn stx ->
+  | (ptn, body) :: t when ptn_match ptn stx ids ->
     (* print_endline ("Pattern match: " ^ str_exp ptn ^ " : " ^ str_syntax stx); *)
     let env = get_ptn_mapping ptn stx in
     let res = transform body env in
@@ -1046,7 +1059,7 @@ and eval_stx_case stx cases =
     (* Reapply scopes lost from converting from stx->exp *)
     List.iter (fun s -> e := add_scope !e s) (0 ==> sc);
     !e
-  | _ :: t -> eval_stx_case stx t
+  | _ :: t -> eval_stx_case stx ids t
   | [] -> macro_error ("Eval Syntax Case: No matching patterns.")
 
 and transform e env =
@@ -1178,29 +1191,35 @@ and get_ptn_mapping_list l stx =
 
 and tbl_to_list = fun h -> Hashtbl.fold (fun k v acc -> (k, v) :: acc) h []
 
-
-and ptn_match ptn stx =
+and ptn_match ptn stx ids =
+  (* print_endline ("ptn match: " ^ str_exp ptn); *)
   match ptn with
   | SApp [] -> stx = SOList []
   (* Vars, numbers, bool match  *)
+  | SId id when List.mem id ids ->
+    (* print_endline id; *)
+    has_id stx id
   | SId _ -> true
   | SQuote _ -> ptn = stx_to_exp stx
   (* Map stx over first pattern  *)
-  | SApp l -> ptn_match_list l stx
+  | SApp l -> ptn_match_list l stx ids
 
-and ptn_match_list l stx =
+and ptn_match_list l stx ids = try
+  (* print_endline (String.concat " " (List.map str_exp l)); *)
+  (* print_endline (str_syntax stx); *)
   let open List in
   if is_list stx then
     let SOList sos = stx in
     match l with
     | [] -> length sos = 0
     | h :: SId "..." :: [] ->
-      for_all (fun s -> ptn_match h s) sos && length sos > 0
+      for_all (fun s -> ptn_match h s ids ) sos && length sos > 0
     | h :: t :: [] ->
-      ptn_match h (hd sos) && ptn_match t (hd (tl sos)) && length (tl (tl sos)) = 0
+      ptn_match h (hd sos) ids && ptn_match t (hd (tl sos)) ids && length (tl (tl sos)) = 0
     | h :: t ->
-      ptn_match h (hd sos) && ptn_match_list t (SOList (tl sos))
+      ptn_match h (hd sos) ids && ptn_match_list t (SOList (tl sos)) ids
   else false
+  with Failure s -> macro_error ("ptn_match_list: " ^ s)
 
 and eval_compiled exp env =
   MacroFn (fun stx ->
@@ -1210,9 +1229,9 @@ and eval_compiled exp env =
       let binding = Hashtbl.create 10 in
       List.iter (fun (SApp (arg::_)) -> Hashtbl.add binding arg stx) args;
     (* introduce *) eval body binding
-    | SStxCase es ->
+    | SStxCase (ids, es) ->
       (* print_endline ("Eval Compiled: " ^ str_exp exp); *)
-      expand (eval_stx_case stx es) ~env:env
+      expand (eval_stx_case stx ids es) ~env:env
     | _ -> macro_error ("Eval_compiled: expected lambda, but received: " ^ str_exp exp)
   )
 
@@ -1241,8 +1260,9 @@ and compile stx =
     | s :: SOList (id :: args) :: ty :: body :: nxt :: [] when is_define s ->
       (* print_endline "compile define"; *)
       SDefine (_rec id, compile_args args, stx_to_ty ty, _rec body, _rec nxt)
-    | s :: cases when is_stxcase s ->
-      SStxCase (List.map (fun (SOList [l;r]) -> (_rec l, _rec r)) cases)
+    | s :: SOList ids :: cases when is_stxcase s ->
+      let ids = List.map _rec ids in
+      SStxCase (List.map (fun (SId id) -> id) ids, List.map (fun (SOList [l;r]) -> (_rec l, _rec r)) cases)
     | s :: t -> SApp (_rec s :: List.map _rec t)
 
 and compile_args args =
